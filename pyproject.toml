@@ -1,0 +1,20 @@
+[project]
+name = "with-workbench"
+version = "0.1.0"
+description = "CLI tool for running Posit Workbench in Docker"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "docker>=7.1.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+with-workbench = "main:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
