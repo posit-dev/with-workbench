@@ -1,0 +1,85 @@
+name: 'Start Posit Workbench'
+description: 'Start Posit Workbench in Docker for testing'
+inputs:
+  license-key:
+    description: 'Posit Workbench license key (or set RSW_LICENSE env var)'
+    required: false
+  version:
+    description: 'Workbench version to use'
+    required: false
+    default: 'release'
+  image:
+    description: 'Custom container image (overrides version)'
+    required: false
+  port:
+    description: 'Port to expose Workbench on'
+    required: false
+    default: '8787'
+  user:
+    description: 'Test username to create'
+    required: false
+    default: 'testuser'
+  password:
+    description: 'Password for test user (auto-generated if not specified)'
+    required: false
+  quiet:
+    description: 'Suppress progress indicators'
+    required: false
+    default: 'false'
+  stop:
+    description: 'Container ID to stop (use instead of starting a new container)'
+    required: false
+
+outputs:
+  WORKBENCH_URL:
+    description: 'Workbench server URL'
+    value: ${{ steps.run.outputs.WORKBENCH_URL }}
+  WORKBENCH_USER:
+    description: 'Test username'
+    value: ${{ steps.run.outputs.WORKBENCH_USER }}
+  WORKBENCH_PASSWORD:
+    description: 'Test user password'
+    value: ${{ steps.run.outputs.WORKBENCH_PASSWORD }}
+  CONTAINER_ID:
+    description: 'Docker container ID'
+    value: ${{ steps.run.outputs.CONTAINER_ID }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v7
+
+    - name: Install with-workbench
+      shell: bash
+      run: uv tool install "${{ github.action_path }}"
+
+    - name: Run with-workbench
+      id: run
+      shell: bash
+      run: |
+        # Handle stop mode
+        if [ -n "${{ inputs.stop }}" ]; then
+          with-workbench --stop "${{ inputs.stop }}"
+          exit 0
+        fi
+
+        # Build arguments
+        ARGS="--version ${{ inputs.version }} --port ${{ inputs.port }}"
+        ARGS="$ARGS --user ${{ inputs.user }}"
+
+        if [ -n "${{ inputs.license-key }}" ]; then
+          ARGS="$ARGS --license-key ${{ inputs.license-key }}"
+        fi
+        if [ -n "${{ inputs.password }}" ]; then
+          ARGS="$ARGS --password ${{ inputs.password }}"
+        fi
+        if [ -n "${{ inputs.image }}" ]; then
+          ARGS="$ARGS --image ${{ inputs.image }}"
+        fi
+        if [ "${{ inputs.quiet }}" = "true" ]; then
+          ARGS="$ARGS --quiet"
+        fi
+
+        # Start Workbench and capture outputs
+        eval with-workbench $ARGS >> "$GITHUB_OUTPUT"
