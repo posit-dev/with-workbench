@@ -118,24 +118,34 @@ def pull_image(client, base_image: str, tag: str, quiet: bool) -> None:
     """Pull Docker image from registry."""
     image_name = f"{base_image}:{tag}"
 
-    if quiet:
-        print(f"Pulling image {image_name}...", file=sys.stderr)
-    else:
-        print(f"Pulling image {image_name}...", end="", flush=True, file=sys.stderr)
+    print(f"Pulling image {image_name}...", file=sys.stderr)
 
     pull_stream = client.api.pull(
         base_image, tag=tag, platform="linux/amd64", stream=True, decode=True
     )
 
-    dot_count = 0
-    for chunk in pull_stream:
-        if "status" in chunk:
-            dot_count += 1
-            if dot_count % 10 == 0 and not quiet:
-                print(".", end="", flush=True, file=sys.stderr)
+    if quiet:
+        for _ in pull_stream:
+            pass
+    else:
+        layer_progress = {}
+        last_percent = -1
+        for chunk in pull_stream:
+            if "id" in chunk and "progressDetail" in chunk:
+                detail = chunk["progressDetail"]
+                if "current" in detail and "total" in detail:
+                    layer_progress[chunk["id"]] = (detail["current"], detail["total"])
 
-    if not quiet:
-        print(file=sys.stderr)
+            if layer_progress:
+                total_current = sum(p[0] for p in layer_progress.values())
+                total_size = sum(p[1] for p in layer_progress.values())
+                if total_size > 0:
+                    percent = int(total_current * 100 / total_size)
+                    if percent != last_percent:
+                        print(f"\rPulling: {percent}%", end="", flush=True, file=sys.stderr)
+                        last_percent = percent
+
+        print("\r" + " " * 20 + "\r", end="", file=sys.stderr)
 
     print(f"Successfully pulled {image_name}", file=sys.stderr)
 
