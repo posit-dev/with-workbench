@@ -3,7 +3,6 @@ import os
 import secrets
 import socket
 import string
-import subprocess
 import sys
 import time
 
@@ -257,33 +256,31 @@ def wait_for_workbench(port: int, timeout: float = 120.0) -> bool:
 
 
 def execute_command(
+    container,
     command: list[str],
     server_url: str,
     username: str,
     password: str | None,
-    container_id: str,
 ) -> int:
-    """Execute a command with Workbench environment variables.
+    """Execute a command inside the Workbench container.
 
-    Returns the command's exit code, or 127 if the command cannot be executed.
+    Returns the command's exit code, or 126 on Docker API errors.
     """
     env = {
-        **os.environ,
         "WORKBENCH_URL": server_url,
         "WORKBENCH_USER": username,
-        "CONTAINER_ID": container_id,
+        "CONTAINER_ID": container.id,
     }
     if password:
         env["WORKBENCH_PASSWORD"] = password
 
     try:
-        result = subprocess.run(command, check=True, env=env)
-        return result.returncode
-    except subprocess.CalledProcessError as e:
-        return e.returncode
-    except OSError as e:
-        print(f"Error: Failed to run command '{command[0]}': {e}", file=sys.stderr)
-        return 127
+        exit_code, output = container.exec_run(command, environment=env)
+        sys.stdout.write(output.decode("utf-8", errors="replace"))
+        return exit_code
+    except docker.errors.APIError as e:
+        print(f"Error: Docker API error executing command: {e}", file=sys.stderr)
+        return 126
 
 
 def run_workbench_command(
@@ -300,7 +297,7 @@ def run_workbench_command(
     """
     if command:
         exit_code = execute_command(
-            command, server_url, username, password, container.id
+            container, command, server_url, username, password
         )
         return (exit_code, True)
     return (0, False)
@@ -390,7 +387,7 @@ def main() -> int:
         # Execute user command or enter start-only mode
         exit_code, stop_container = run_workbench_command(
             container,
-            args.command if args.command else None,
+            args.command,
             server_url,
             args.user,
             actual_password,

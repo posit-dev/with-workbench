@@ -6,6 +6,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import docker
+
 import main
 
 
@@ -189,129 +190,135 @@ def test_parse_args_empty_command_after_separator():
 
 
 def test_execute_command_environment_variables():
-    """Test that execute_command passes correct environment variables."""
+    """Test that execute_command passes correct environment variables to container."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123def456"
     captured_env = {}
 
-    def capture_env(_cmd, **kwargs):
-        captured_env.update(kwargs.get("env", {}))
-        result = MagicMock()
-        result.returncode = 0
-        return result
+    def capture_exec(cmd, environment=None):
+        captured_env.update(environment or {})
+        return (0, b"output")
 
-    with patch("main.subprocess.run", side_effect=capture_env):
-        # WHEN execute_command is called with credentials
-        exit_code = main.execute_command(
-            command=["echo", "test"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="testpass123",
-            container_id="abc123def456",
-        )
+    mock_container.exec_run.side_effect = capture_exec
 
-        # THEN environment should contain all Workbench variables
-        assert captured_env["WORKBENCH_URL"] == "http://localhost:8787"
-        assert captured_env["WORKBENCH_USER"] == "testuser"
-        assert captured_env["WORKBENCH_PASSWORD"] == "testpass123"
-        assert captured_env["CONTAINER_ID"] == "abc123def456"
-        assert exit_code == 0
+    # WHEN execute_command is called with credentials
+    exit_code = main.execute_command(
+        container=mock_container,
+        command=["echo", "test"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="testpass123",
+    )
+
+    # THEN environment should contain all Workbench variables
+    assert captured_env["WORKBENCH_URL"] == "http://localhost:8787"
+    assert captured_env["WORKBENCH_USER"] == "testuser"
+    assert captured_env["WORKBENCH_PASSWORD"] == "testpass123"
+    assert captured_env["CONTAINER_ID"] == "abc123def456"
+    assert exit_code == 0
 
 
 def test_execute_command_no_password():
     """Test that execute_command omits WORKBENCH_PASSWORD when password is None."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
     captured_env = {}
 
-    def capture_env(_cmd, **kwargs):
-        captured_env.update(kwargs.get("env", {}))
-        result = MagicMock()
-        result.returncode = 0
-        return result
+    def capture_exec(cmd, environment=None):
+        captured_env.update(environment or {})
+        return (0, b"output")
 
-    with patch("main.subprocess.run", side_effect=capture_env):
-        # WHEN execute_command is called with password=None
-        main.execute_command(
-            command=["echo", "test"],
-            server_url="http://localhost:8787",
-            username="rstudio",
-            password=None,
-            container_id="abc123",
-        )
+    mock_container.exec_run.side_effect = capture_exec
 
-        # THEN WORKBENCH_PASSWORD should not be in environment
-        assert "WORKBENCH_PASSWORD" not in captured_env
-        assert captured_env["WORKBENCH_USER"] == "rstudio"
+    # WHEN execute_command is called with password=None
+    main.execute_command(
+        container=mock_container,
+        command=["echo", "test"],
+        server_url="http://localhost:8787",
+        username="rstudio",
+        password=None,
+    )
+
+    # THEN WORKBENCH_PASSWORD should not be in environment
+    assert "WORKBENCH_PASSWORD" not in captured_env
+    assert captured_env["WORKBENCH_USER"] == "rstudio"
 
 
 def test_execute_command_exit_code_success():
     """Test that execute_command returns exit code 0 on success."""
-    mock_result = MagicMock()
-    mock_result.returncode = 0
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (0, b"success output")
 
-    with patch("main.subprocess.run", return_value=mock_result):
-        # WHEN command succeeds
-        exit_code = main.execute_command(
-            command=["true"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="pass",
-            container_id="abc123",
-        )
+    # WHEN command succeeds
+    exit_code = main.execute_command(
+        container=mock_container,
+        command=["true"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
 
-        # THEN exit code should be 0
-        assert exit_code == 0
+    # THEN exit code should be 0
+    assert exit_code == 0
 
 
 def test_execute_command_exit_code_failure():
     """Test that execute_command propagates non-zero exit codes."""
-    with patch(
-        "main.subprocess.run",
-        side_effect=subprocess.CalledProcessError(returncode=42, cmd=["failing-command"]),
-    ):
-        # WHEN command fails with exit code 42
-        exit_code = main.execute_command(
-            command=["failing-command"],
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (42, b"command failed")
+
+    # WHEN command fails with exit code 42
+    exit_code = main.execute_command(
+        container=mock_container,
+        command=["failing-command"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
+
+    # THEN exit code should be propagated
+    assert exit_code == 42
+
+
+def test_execute_command_outputs_to_stdout():
+    """Test that execute_command writes container output to stdout."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (0, b"hello from container\n")
+
+    # WHEN command runs
+    with patch("sys.stdout.write") as mock_write:
+        main.execute_command(
+            container=mock_container,
+            command=["echo", "hello"],
             server_url="http://localhost:8787",
             username="testuser",
             password="pass",
-            container_id="abc123",
         )
 
-        # THEN exit code should be propagated
-        assert exit_code == 42
+        # THEN output should be written to stdout
+        mock_write.assert_called_once_with("hello from container\n")
 
 
-def test_execute_command_oserror_returns_127():
-    """Test that execute_command returns 127 when command cannot be executed."""
-    with patch(
-        "main.subprocess.run",
-        side_effect=FileNotFoundError("No such file or directory: 'nonexistent-cmd'"),
-    ):
-        # WHEN command doesn't exist (FileNotFoundError)
-        exit_code = main.execute_command(
-            command=["nonexistent-cmd"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="pass",
-            container_id="abc123",
-        )
+def test_execute_command_docker_api_error_returns_126():
+    """Test that execute_command returns 126 on Docker API errors."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.side_effect = docker.errors.APIError("Container stopped")
 
-        # THEN exit code should be 127 (command not found)
-        assert exit_code == 127
+    # WHEN Docker API fails
+    exit_code = main.execute_command(
+        container=mock_container,
+        command=["some-command"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
 
-
-def test_execute_command_permission_error_returns_127():
-    """Test that execute_command returns 127 on permission denied."""
-    with patch("main.subprocess.run", side_effect=PermissionError("Permission denied")):
-        # WHEN command lacks execute permission
-        exit_code = main.execute_command(
-            command=["./not-executable"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="pass",
-            container_id="abc123",
-        )
-
-        # THEN exit code should be 127
-        assert exit_code == 127
+    # THEN exit code should be 126 (cannot execute)
+    assert exit_code == 126
 
 
 # === Container Lifecycle ===
@@ -319,48 +326,42 @@ def test_execute_command_permission_error_returns_127():
 
 def test_run_workbench_command_with_command_stops_container():
     """Test that run_workbench_command returns stop_container=True when command provided."""
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-
     mock_container = MagicMock()
     mock_container.id = "container123"
+    mock_container.exec_run.return_value = (0, b"output")
 
-    with patch("main.subprocess.run", return_value=mock_result):
-        # WHEN command is provided
-        exit_code, stop_container = main.run_workbench_command(
-            container=mock_container,
-            command=["echo", "test"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="pass",
-        )
+    # WHEN command is provided
+    exit_code, stop_container = main.run_workbench_command(
+        container=mock_container,
+        command=["echo", "test"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
 
-        # THEN stop_container should be True
-        assert stop_container is True
-        assert exit_code == 0
+    # THEN stop_container should be True
+    assert stop_container is True
+    assert exit_code == 0
 
 
 def test_run_workbench_command_with_failed_command_stops_container():
     """Test that run_workbench_command returns stop_container=True even on command failure."""
     mock_container = MagicMock()
     mock_container.id = "container123"
+    mock_container.exec_run.return_value = (1, b"command failed")
 
-    with patch(
-        "main.subprocess.run",
-        side_effect=subprocess.CalledProcessError(returncode=1, cmd=["failing-command"]),
-    ):
-        # WHEN command fails
-        exit_code, stop_container = main.run_workbench_command(
-            container=mock_container,
-            command=["failing-command"],
-            server_url="http://localhost:8787",
-            username="testuser",
-            password="pass",
-        )
+    # WHEN command fails
+    exit_code, stop_container = main.run_workbench_command(
+        container=mock_container,
+        command=["failing-command"],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
 
-        # THEN stop_container should still be True
-        assert stop_container is True
-        assert exit_code == 1
+    # THEN stop_container should still be True
+    assert stop_container is True
+    assert exit_code == 1
 
 
 def test_run_workbench_command_start_only_mode_no_stop():
@@ -555,11 +556,11 @@ if __name__ == "__main__":
     test_execute_command_exit_code_failure()
     print("✓ test_execute_command_exit_code_failure passed")
 
-    test_execute_command_oserror_returns_127()
-    print("✓ test_execute_command_oserror_returns_127 passed")
+    test_execute_command_outputs_to_stdout()
+    print("✓ test_execute_command_outputs_to_stdout passed")
 
-    test_execute_command_permission_error_returns_127()
-    print("✓ test_execute_command_permission_error_returns_127 passed")
+    test_execute_command_docker_api_error_returns_126()
+    print("✓ test_execute_command_docker_api_error_returns_126 passed")
 
     test_run_workbench_command_with_command_stops_container()
     print("✓ test_run_workbench_command_with_command_stops_container passed")
