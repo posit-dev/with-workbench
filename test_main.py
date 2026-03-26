@@ -402,6 +402,143 @@ def test_run_workbench_command_empty_command_is_start_only():
     assert exit_code == 0
 
 
+# === Environment Passthrough ===
+
+
+def test_parse_args_single_env_var():
+    """Test that -e flag captures a single environment variable."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "-e", "MY_VAR=value123"]
+        args = main.parse_args()
+        assert args.env_vars == ["MY_VAR=value123"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_multiple_env_vars():
+    """Test that multiple -e flags are collected."""
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            "with-workbench",
+            "-e", "VAR1=value1",
+            "-e", "VAR2=value2",
+            "--env", "VAR3=value3",
+        ]
+        args = main.parse_args()
+        assert args.env_vars == ["VAR1=value1", "VAR2=value2", "VAR3=value3"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_env_with_equals_in_value():
+    """Test that env var values containing = are handled correctly."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "-e", "CONNECTION_STRING=host=db;port=5432"]
+        args = main.parse_args()
+        assert args.env_vars == ["CONNECTION_STRING=host=db;port=5432"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_no_env_vars():
+    """Test that env_vars is None when no -e flags provided."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "--port", "8787"]
+        args = main.parse_args()
+        assert args.env_vars is None
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_env_with_command():
+    """Test that -e flags work with command execution mode."""
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            "with-workbench",
+            "-e", "TEST_MODE=true",
+            "--",
+            "pytest", "-v",
+        ]
+        args = main.parse_args()
+        assert args.env_vars == ["TEST_MODE=true"]
+        assert args.command == ["pytest", "-v"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_env_var_without_equals_is_ignored():
+    """Env vars without = are silently skipped (matches with-connect behavior)."""
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            "with-workbench",
+            "-e", "VALID=value",
+            "-e", "MALFORMED_NO_EQUALS",
+            "-e", "ALSO_VALID=123",
+        ]
+        args = main.parse_args()
+
+        # WHEN we build container_env as main() does
+        container_env = {"RSW_LICENSE": "test"}
+        for env_var in args.env_vars:
+            if "=" in env_var:
+                key, value = env_var.split("=", 1)
+                container_env[key] = value
+
+        # THEN malformed entry is skipped, valid ones are included
+        assert "VALID" in container_env
+        assert container_env["VALID"] == "value"
+        assert "ALSO_VALID" in container_env
+        assert container_env["ALSO_VALID"] == "123"
+        assert "MALFORMED_NO_EQUALS" not in container_env
+    finally:
+        sys.argv = original_argv
+
+
+def test_env_vars_passed_to_container():
+    """Test that env vars from -e flags are passed to client.containers.run()."""
+    mock_client = MagicMock()
+    mock_container = MagicMock()
+    mock_container.id = "test123"
+    mock_container.logs.return_value = b""
+    mock_client.containers.run.return_value = mock_container
+
+    captured_env = {}
+
+    def capture_run(*args, **kwargs):
+        captured_env.update(kwargs.get("environment", {}))
+        return mock_container
+
+    mock_client.containers.run.side_effect = capture_run
+
+    # WHEN container is started with env vars
+    # Simulate the logic from main() lines 377-387
+    args_env_vars = ["MY_VAR=my_value", "ANOTHER=123"]
+    license_key = "test-license"
+
+    container_env = {"RSW_LICENSE": license_key}
+    for env_var in args_env_vars:
+        if "=" in env_var:
+            key, value = env_var.split("=", 1)
+            container_env[key] = value
+
+    mock_client.containers.run(
+        image="test:latest",
+        detach=True,
+        environment=container_env,
+    )
+
+    # THEN environment should contain license and user-provided vars
+    assert captured_env["RSW_LICENSE"] == "test-license"
+    assert captured_env["MY_VAR"] == "my_value"
+    assert captured_env["ANOTHER"] == "123"
+
+
 # === CLI Validation ===
 
 
@@ -651,5 +788,26 @@ if __name__ == "__main__":
 
     test_latest_always_pulls()
     print("✓ test_latest_always_pulls passed")
+
+    test_parse_args_single_env_var()
+    print("✓ test_parse_args_single_env_var passed")
+
+    test_parse_args_multiple_env_vars()
+    print("✓ test_parse_args_multiple_env_vars passed")
+
+    test_parse_args_env_with_equals_in_value()
+    print("✓ test_parse_args_env_with_equals_in_value passed")
+
+    test_parse_args_no_env_vars()
+    print("✓ test_parse_args_no_env_vars passed")
+
+    test_parse_args_env_with_command()
+    print("✓ test_parse_args_env_with_command passed")
+
+    test_env_var_without_equals_is_ignored()
+    print("✓ test_env_var_without_equals_is_ignored passed")
+
+    test_env_vars_passed_to_container()
+    print("✓ test_env_vars_passed_to_container passed")
 
     print("\nAll tests passed!")

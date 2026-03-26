@@ -56,6 +56,13 @@ def parse_args():
         help="Suppress progress indicators",
     )
     parser.add_argument(
+        "-e",
+        "--env",
+        action="append",
+        dest="env_vars",
+        help="Environment variables to pass to Docker container (KEY=VALUE, repeatable)",
+    )
+    parser.add_argument(
         "--stop",
         nargs="?",
         default=None,
@@ -369,6 +376,11 @@ def main() -> int:
     container_env = {
         "RSW_LICENSE": license_key,
     }
+    if args.env_vars:
+        for env_var in args.env_vars:
+            if "=" in env_var:
+                key, value = env_var.split("=", 1)
+                container_env[key] = value
 
     print(f"Starting Workbench container...", file=sys.stderr)
     container = client.containers.run(
