@@ -84,6 +84,16 @@ def parse_image_spec(image: str) -> tuple[str, str]:
     return (image, "latest")
 
 
+def get_docker_client():
+    """Get Docker client, with friendly error if Docker isn't running."""
+    try:
+        return docker.from_env()
+    except docker.errors.DockerException:
+        raise RuntimeError(
+            "Cannot connect to Docker. Is Docker Desktop running?"
+        )
+
+
 def has_local_image(client, image_name: str) -> bool:
     """Check if image exists locally."""
     try:
@@ -119,25 +129,44 @@ def pull_image(client, base_image: str, tag: str, quiet: bool) -> None:
     print(f"Successfully pulled {image_name}", file=sys.stderr)
 
 
-def ensure_image(client, base_image: str, tag: str, version: str, quiet: bool) -> None:
-    """Ensure Docker image is available, pulling if needed."""
+def ensure_image(
+    client, base_image: str, tag: str, version: str, quiet: bool
+) -> tuple[str, str]:
+    """Ensure Docker image is available, pulling if needed.
+
+    Returns the (base_image, tag) that was successfully obtained. This may differ
+    from the input if we fall back to the preview registry.
+    """
     image_name = f"{base_image}:{tag}"
     is_release = version in ("latest", "release", "preview")
 
     if not is_release and has_local_image(client, image_name):
         print(f"Using locally cached image {image_name}", file=sys.stderr)
-        return
+        return (base_image, tag)
 
     try:
         pull_image(client, base_image, tag, quiet)
+        return (base_image, tag)
     except Exception as e:
+        # Try preview registry as fallback for main workbench images
+        if base_image == IMAGE:
+            print(
+                f"Image not found in main registry, trying preview...",
+                file=sys.stderr,
+            )
+            try:
+                pull_image(client, IMAGE_PREVIEW, tag, quiet)
+                return (IMAGE_PREVIEW, tag)
+            except Exception:
+                pass  # Fall through to local cache check
+
         if has_local_image(client, image_name):
             print(
                 f"Pull failed, using locally cached image {image_name}",
                 file=sys.stderr,
             )
-        else:
-            raise RuntimeError(f"Failed to pull image: {e}")
+            return (base_image, tag)
+        raise RuntimeError(f"Failed to pull image: {e}")
 
 
 def generate_password(length: int = 16) -> str:
@@ -226,7 +255,7 @@ def main() -> int:
             raise RuntimeError(
                 "No container ID provided and CONTAINER_ID env var not set"
             )
-        client = docker.from_env()
+        client = get_docker_client()
         try:
             container = client.containers.get(container_id)
             container.stop()
@@ -246,16 +275,16 @@ def main() -> int:
     if args.image and args.version != DEFAULT_VERSION:
         raise RuntimeError("Cannot specify both --image and --version")
 
-    client = docker.from_env()
+    client = get_docker_client()
 
     # Determine image
     if args.image:
         base_image, tag = parse_image_spec(args.image)
     else:
         base_image, tag = get_docker_tag(args.version)
-    image_name = f"{base_image}:{tag}"
 
-    ensure_image(client, base_image, tag, args.version, args.quiet)
+    base_image, tag = ensure_image(client, base_image, tag, args.version, args.quiet)
+    image_name = f"{base_image}:{tag}"
 
     # Generate password if not provided
     password = args.password or generate_password()
