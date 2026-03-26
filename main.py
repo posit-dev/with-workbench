@@ -3,6 +3,7 @@ import os
 import secrets
 import socket
 import string
+import subprocess
 import sys
 import time
 
@@ -64,7 +65,18 @@ def parse_args():
         help="Stop a running container (uses CONTAINER_ID env var if not specified)",
     )
 
-    return parser.parse_args()
+    # Handle -- separator to capture command arguments
+    if "--" in sys.argv:
+        separator_index = sys.argv.index("--")
+        main_args = sys.argv[1:separator_index]
+        command_args = sys.argv[separator_index + 1:]
+    else:
+        main_args = sys.argv[1:]
+        command_args = []
+
+    args = parser.parse_args(main_args)
+    args.command = command_args
+    return args
 
 
 def get_docker_tag(version: str) -> tuple[str, str]:
@@ -311,6 +323,7 @@ def main() -> int:
     )
 
     server_url = f"http://localhost:{host_port}"
+    stop_container = True
 
     try:
         print(
@@ -319,30 +332,48 @@ def main() -> int:
         if not wait_for_workbench(host_port, timeout=120.0):
             print("\nContainer logs:", file=sys.stderr)
             print(container.logs().decode("utf-8", errors="replace"), file=sys.stderr)
-            container.stop()
             raise RuntimeError("Workbench did not start within 120 seconds")
 
         # Create test user
         actual_password = create_test_user(container, args.user, password)
 
-        # Output credentials
-        print(f"WORKBENCH_URL={server_url}")
-        print(f"WORKBENCH_USER={args.user}")
-        if actual_password:
-            print(f"WORKBENCH_PASSWORD={actual_password}")
-        print(f"CONTAINER_ID={container.id}")
+        # Execute user command if provided
+        exit_code = 0
+        if args.command:
+            env = {
+                **os.environ,
+                "WORKBENCH_URL": server_url,
+                "WORKBENCH_USER": args.user,
+            }
+            if actual_password:
+                env["WORKBENCH_PASSWORD"] = actual_password
+            env["CONTAINER_ID"] = container.id
 
-        print(f"\nWorkbench is running at {server_url}", file=sys.stderr)
-        if actual_password:
-            print(f"Login with {args.user} / {actual_password}", file=sys.stderr)
+            try:
+                result = subprocess.run(args.command, check=True, env=env)
+                exit_code = result.returncode
+            except subprocess.CalledProcessError as e:
+                exit_code = e.returncode
         else:
-            print(f"Login with {args.user} (use default password)", file=sys.stderr)
-        print(f"Stop with: with-workbench --stop {container.id}", file=sys.stderr)
+            # Start-only mode: output credentials and keep container running
+            print(f"WORKBENCH_URL={server_url}")
+            print(f"WORKBENCH_USER={args.user}")
+            if actual_password:
+                print(f"WORKBENCH_PASSWORD={actual_password}")
+            print(f"CONTAINER_ID={container.id}")
 
-        return 0
-    except Exception:
-        container.stop()
-        raise
+            print(f"\nWorkbench is running at {server_url}", file=sys.stderr)
+            if actual_password:
+                print(f"Login with {args.user} / {actual_password}", file=sys.stderr)
+            else:
+                print(f"Login with {args.user} (use default password)", file=sys.stderr)
+            print(f"Stop with: with-workbench --stop {container.id}", file=sys.stderr)
+            stop_container = False
+
+        return exit_code
+    finally:
+        if stop_container:
+            container.stop()
 
 
 if __name__ == "__main__":
