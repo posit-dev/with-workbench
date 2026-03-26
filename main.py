@@ -256,6 +256,56 @@ def wait_for_workbench(port: int, timeout: float = 120.0) -> bool:
     return False
 
 
+def execute_command(
+    command: list[str],
+    server_url: str,
+    username: str,
+    password: str | None,
+    container_id: str,
+) -> int:
+    """Execute a command with Workbench environment variables.
+
+    Returns the command's exit code, or 127 if the command cannot be executed.
+    """
+    env = {
+        **os.environ,
+        "WORKBENCH_URL": server_url,
+        "WORKBENCH_USER": username,
+        "CONTAINER_ID": container_id,
+    }
+    if password:
+        env["WORKBENCH_PASSWORD"] = password
+
+    try:
+        result = subprocess.run(command, check=True, env=env)
+        return result.returncode
+    except subprocess.CalledProcessError as e:
+        return e.returncode
+    except OSError as e:
+        print(f"Error: Failed to run command '{command[0]}': {e}", file=sys.stderr)
+        return 127
+
+
+def run_workbench_command(
+    container,
+    command: list[str] | None,
+    server_url: str,
+    username: str,
+    password: str | None,
+) -> tuple[int, bool]:
+    """Execute command against Workbench and determine container cleanup.
+
+    Returns (exit_code, stop_container). In command mode, stop_container is True.
+    In start-only mode (command is None or empty), stop_container is False.
+    """
+    if command:
+        exit_code = execute_command(
+            command, server_url, username, password, container.id
+        )
+        return (exit_code, True)
+    return (0, False)
+
+
 def main() -> int:
     """Main entry point."""
     args = parse_args()
@@ -323,7 +373,7 @@ def main() -> int:
     )
 
     server_url = f"http://localhost:{host_port}"
-    stop_container = True
+    stop_container = True  # Default to stopping; start-only mode will set to False
 
     try:
         print(
@@ -337,25 +387,17 @@ def main() -> int:
         # Create test user
         actual_password = create_test_user(container, args.user, password)
 
-        # Execute user command if provided
-        exit_code = 0
-        if args.command:
-            env = {
-                **os.environ,
-                "WORKBENCH_URL": server_url,
-                "WORKBENCH_USER": args.user,
-            }
-            if actual_password:
-                env["WORKBENCH_PASSWORD"] = actual_password
-            env["CONTAINER_ID"] = container.id
+        # Execute user command or enter start-only mode
+        exit_code, stop_container = run_workbench_command(
+            container,
+            args.command if args.command else None,
+            server_url,
+            args.user,
+            actual_password,
+        )
 
-            try:
-                result = subprocess.run(args.command, check=True, env=env)
-                exit_code = result.returncode
-            except subprocess.CalledProcessError as e:
-                exit_code = e.returncode
-        else:
-            # Start-only mode: output credentials and keep container running
+        if not stop_container:
+            # Start-only mode: output credentials
             print(f"WORKBENCH_URL={server_url}")
             print(f"WORKBENCH_USER={args.user}")
             if actual_password:
@@ -368,7 +410,6 @@ def main() -> int:
             else:
                 print(f"Login with {args.user} (use default password)", file=sys.stderr)
             print(f"Stop with: with-workbench --stop {container.id}", file=sys.stderr)
-            stop_container = False
 
         return exit_code
     finally:

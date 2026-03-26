@@ -3,7 +3,7 @@ import socket
 import string
 import subprocess
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import docker
 import main
@@ -139,6 +139,268 @@ def test_create_test_user_failure():
         assert "Failed to create user" in str(e)
 
 
+# === Command Execution Mode ===
+
+
+def test_parse_args_with_command():
+    """Test that -- separator captures command arguments."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "--port", "8888", "--", "npm", "run", "test"]
+        args = main.parse_args()
+        assert args.port == 8888
+        assert args.command == ["npm", "run", "test"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_without_command():
+    """Test that no -- separator results in empty command list."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "--port", "8888"]
+        args = main.parse_args()
+        assert args.port == 8888
+        assert args.command == []
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_command_with_flags():
+    """Test that command arguments with flags are captured correctly."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "--", "pytest", "-v", "--timeout=30"]
+        args = main.parse_args()
+        assert args.command == ["pytest", "-v", "--timeout=30"]
+    finally:
+        sys.argv = original_argv
+
+
+def test_parse_args_empty_command_after_separator():
+    """Test -- with no following arguments."""
+    original_argv = sys.argv
+    try:
+        sys.argv = ["with-workbench", "--"]
+        args = main.parse_args()
+        assert args.command == []
+    finally:
+        sys.argv = original_argv
+
+
+def test_execute_command_environment_variables():
+    """Test that execute_command passes correct environment variables."""
+    captured_env = {}
+
+    def capture_env(_cmd, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("main.subprocess.run", side_effect=capture_env):
+        # WHEN execute_command is called with credentials
+        exit_code = main.execute_command(
+            command=["echo", "test"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="testpass123",
+            container_id="abc123def456",
+        )
+
+        # THEN environment should contain all Workbench variables
+        assert captured_env["WORKBENCH_URL"] == "http://localhost:8787"
+        assert captured_env["WORKBENCH_USER"] == "testuser"
+        assert captured_env["WORKBENCH_PASSWORD"] == "testpass123"
+        assert captured_env["CONTAINER_ID"] == "abc123def456"
+        assert exit_code == 0
+
+
+def test_execute_command_no_password():
+    """Test that execute_command omits WORKBENCH_PASSWORD when password is None."""
+    captured_env = {}
+
+    def capture_env(_cmd, **kwargs):
+        captured_env.update(kwargs.get("env", {}))
+        result = MagicMock()
+        result.returncode = 0
+        return result
+
+    with patch("main.subprocess.run", side_effect=capture_env):
+        # WHEN execute_command is called with password=None
+        main.execute_command(
+            command=["echo", "test"],
+            server_url="http://localhost:8787",
+            username="rstudio",
+            password=None,
+            container_id="abc123",
+        )
+
+        # THEN WORKBENCH_PASSWORD should not be in environment
+        assert "WORKBENCH_PASSWORD" not in captured_env
+        assert captured_env["WORKBENCH_USER"] == "rstudio"
+
+
+def test_execute_command_exit_code_success():
+    """Test that execute_command returns exit code 0 on success."""
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+
+    with patch("main.subprocess.run", return_value=mock_result):
+        # WHEN command succeeds
+        exit_code = main.execute_command(
+            command=["true"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+            container_id="abc123",
+        )
+
+        # THEN exit code should be 0
+        assert exit_code == 0
+
+
+def test_execute_command_exit_code_failure():
+    """Test that execute_command propagates non-zero exit codes."""
+    with patch(
+        "main.subprocess.run",
+        side_effect=subprocess.CalledProcessError(returncode=42, cmd=["failing-command"]),
+    ):
+        # WHEN command fails with exit code 42
+        exit_code = main.execute_command(
+            command=["failing-command"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+            container_id="abc123",
+        )
+
+        # THEN exit code should be propagated
+        assert exit_code == 42
+
+
+def test_execute_command_oserror_returns_127():
+    """Test that execute_command returns 127 when command cannot be executed."""
+    with patch(
+        "main.subprocess.run",
+        side_effect=FileNotFoundError("No such file or directory: 'nonexistent-cmd'"),
+    ):
+        # WHEN command doesn't exist (FileNotFoundError)
+        exit_code = main.execute_command(
+            command=["nonexistent-cmd"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+            container_id="abc123",
+        )
+
+        # THEN exit code should be 127 (command not found)
+        assert exit_code == 127
+
+
+def test_execute_command_permission_error_returns_127():
+    """Test that execute_command returns 127 on permission denied."""
+    with patch("main.subprocess.run", side_effect=PermissionError("Permission denied")):
+        # WHEN command lacks execute permission
+        exit_code = main.execute_command(
+            command=["./not-executable"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+            container_id="abc123",
+        )
+
+        # THEN exit code should be 127
+        assert exit_code == 127
+
+
+# === Container Lifecycle ===
+
+
+def test_run_workbench_command_with_command_stops_container():
+    """Test that run_workbench_command returns stop_container=True when command provided."""
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+
+    mock_container = MagicMock()
+    mock_container.id = "container123"
+
+    with patch("main.subprocess.run", return_value=mock_result):
+        # WHEN command is provided
+        exit_code, stop_container = main.run_workbench_command(
+            container=mock_container,
+            command=["echo", "test"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+        )
+
+        # THEN stop_container should be True
+        assert stop_container is True
+        assert exit_code == 0
+
+
+def test_run_workbench_command_with_failed_command_stops_container():
+    """Test that run_workbench_command returns stop_container=True even on command failure."""
+    mock_container = MagicMock()
+    mock_container.id = "container123"
+
+    with patch(
+        "main.subprocess.run",
+        side_effect=subprocess.CalledProcessError(returncode=1, cmd=["failing-command"]),
+    ):
+        # WHEN command fails
+        exit_code, stop_container = main.run_workbench_command(
+            container=mock_container,
+            command=["failing-command"],
+            server_url="http://localhost:8787",
+            username="testuser",
+            password="pass",
+        )
+
+        # THEN stop_container should still be True
+        assert stop_container is True
+        assert exit_code == 1
+
+
+def test_run_workbench_command_start_only_mode_no_stop():
+    """Test that run_workbench_command returns stop_container=False in start-only mode."""
+    mock_container = MagicMock()
+    mock_container.id = "container123"
+
+    # WHEN no command is provided (start-only mode)
+    exit_code, stop_container = main.run_workbench_command(
+        container=mock_container,
+        command=None,
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
+
+    # THEN stop_container should be False
+    assert stop_container is False
+    assert exit_code == 0
+
+
+def test_run_workbench_command_empty_command_is_start_only():
+    """Test that empty command list is treated as start-only mode."""
+    mock_container = MagicMock()
+    mock_container.id = "container123"
+
+    # WHEN command is empty list
+    exit_code, stop_container = main.run_workbench_command(
+        container=mock_container,
+        command=[],
+        server_url="http://localhost:8787",
+        username="testuser",
+        password="pass",
+    )
+
+    # THEN should be start-only mode (stop_container=False)
+    assert stop_container is False
+    assert exit_code == 0
+
+
 # === CLI Validation ===
 
 
@@ -269,6 +531,48 @@ def test_latest_always_pulls():
 
 
 if __name__ == "__main__":
+    test_parse_args_with_command()
+    print("✓ test_parse_args_with_command passed")
+
+    test_parse_args_without_command()
+    print("✓ test_parse_args_without_command passed")
+
+    test_parse_args_command_with_flags()
+    print("✓ test_parse_args_command_with_flags passed")
+
+    test_parse_args_empty_command_after_separator()
+    print("✓ test_parse_args_empty_command_after_separator passed")
+
+    test_execute_command_environment_variables()
+    print("✓ test_execute_command_environment_variables passed")
+
+    test_execute_command_no_password()
+    print("✓ test_execute_command_no_password passed")
+
+    test_execute_command_exit_code_success()
+    print("✓ test_execute_command_exit_code_success passed")
+
+    test_execute_command_exit_code_failure()
+    print("✓ test_execute_command_exit_code_failure passed")
+
+    test_execute_command_oserror_returns_127()
+    print("✓ test_execute_command_oserror_returns_127 passed")
+
+    test_execute_command_permission_error_returns_127()
+    print("✓ test_execute_command_permission_error_returns_127 passed")
+
+    test_run_workbench_command_with_command_stops_container()
+    print("✓ test_run_workbench_command_with_command_stops_container passed")
+
+    test_run_workbench_command_with_failed_command_stops_container()
+    print("✓ test_run_workbench_command_with_failed_command_stops_container passed")
+
+    test_run_workbench_command_start_only_mode_no_stop()
+    print("✓ test_run_workbench_command_start_only_mode_no_stop passed")
+
+    test_run_workbench_command_empty_command_is_start_only()
+    print("✓ test_run_workbench_command_empty_command_is_start_only passed")
+
     test_get_docker_tag_release()
     print("✓ test_get_docker_tag_release passed")
 
