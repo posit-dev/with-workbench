@@ -1,0 +1,128 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run unit tests
+        run: uv run test_main.py
+
+  test-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test with-workbench action (single line)
+        uses: ./
+        with:
+          version: release
+          license-key: ${{ secrets.RSW_LICENSE }}
+          command: 'curl -f $WORKBENCH_URL/health-check'
+
+      - name: Test with-workbench action (multiline)
+        uses: ./
+        with:
+          version: release
+          license-key: ${{ secrets.RSW_LICENSE }}
+          command: |
+            set -euo pipefail
+            echo "Testing multiline command"
+            curl -f $WORKBENCH_URL/health-check
+            echo "WORKBENCH_URL: $WORKBENCH_URL"
+            echo "WORKBENCH_USER: $WORKBENCH_USER"
+            [ -n "$WORKBENCH_URL" ] || exit 1
+            [ -n "$WORKBENCH_USER" ] || exit 1
+            echo "Multiline test passed"
+
+  test-action-start-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Start Workbench (no command)
+        id: start-workbench
+        uses: ./
+        with:
+          version: release
+          license-key: ${{ secrets.RSW_LICENSE }}
+
+      - name: Verify outputs are set
+        run: |
+          set -euo pipefail
+          echo "URL: $WORKBENCH_URL"
+          echo "User: $WORKBENCH_USER"
+          echo "Password length: ${#WORKBENCH_PASSWORD}"
+          echo "Container ID: $CONTAINER_ID"
+          [ -n "$WORKBENCH_URL" ] || { echo "ERROR: WORKBENCH_URL output is empty"; exit 1; }
+          [ -n "$WORKBENCH_USER" ] || { echo "ERROR: WORKBENCH_USER output is empty"; exit 1; }
+          [ -n "$WORKBENCH_PASSWORD" ] || { echo "ERROR: WORKBENCH_PASSWORD output is empty"; exit 1; }
+          [ -n "$CONTAINER_ID" ] || { echo "ERROR: CONTAINER_ID output is empty"; exit 1; }
+          echo "All outputs are set"
+        env:
+          WORKBENCH_URL: ${{ steps.start-workbench.outputs.WORKBENCH_URL }}
+          WORKBENCH_USER: ${{ steps.start-workbench.outputs.WORKBENCH_USER }}
+          WORKBENCH_PASSWORD: ${{ steps.start-workbench.outputs.WORKBENCH_PASSWORD }}
+          CONTAINER_ID: ${{ steps.start-workbench.outputs.CONTAINER_ID }}
+
+      - name: Use Workbench with outputs
+        run: |
+          set -euo pipefail
+          curl -f "$WORKBENCH_URL/health-check"
+          echo "Successfully used Workbench with action outputs"
+        env:
+          WORKBENCH_URL: ${{ steps.start-workbench.outputs.WORKBENCH_URL }}
+
+      - name: Stop Workbench
+        uses: ./
+        with:
+          stop: ${{ steps.start-workbench.outputs.CONTAINER_ID }}
+
+      - name: Verify container stopped
+        run: |
+          set -euo pipefail
+          if docker ps -q --filter "id=$CONTAINER_ID" | grep -q .; then
+            echo "ERROR: Container is still running"
+            exit 1
+          fi
+          echo "Container successfully stopped"
+        env:
+          CONTAINER_ID: ${{ steps.start-workbench.outputs.CONTAINER_ID }}
+
+  test-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install with-workbench
+        run: uv tool install .
+
+      - name: Test with-workbench CLI
+        run: |
+          with-workbench --license-key "$RSW_LICENSE" -- \
+            bash -c '
+              set -euo pipefail
+              curl -f $WORKBENCH_URL/health-check
+              echo "CLI test passed - health check returned OK"
+            '
+        env:
+          RSW_LICENSE: ${{ secrets.RSW_LICENSE }}
