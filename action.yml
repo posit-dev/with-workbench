@@ -58,46 +58,58 @@ runs:
 
     - name: Install with-workbench
       shell: bash
-      run: uv tool install ${{ github.action_path }}
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: uv tool install "$ACTION_PATH"
 
     - name: Run command
       id: run
       shell: bash
       env:
         RSW_LICENSE: ${{ inputs.license-key }}
+        INPUT_STOP: ${{ inputs.stop }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_PORT: ${{ inputs.port }}
+        INPUT_USER: ${{ inputs.user }}
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_PASSWORD: ${{ inputs.password }}
+        INPUT_QUIET: ${{ inputs.quiet }}
+        INPUT_ENV: ${{ inputs.env }}
+        INPUT_COMMAND: ${{ inputs.command }}
       run: |
         # Handle stop mode
-        if [ -n "${{ inputs.stop }}" ]; then
-          with-workbench --stop "${{ inputs.stop }}"
+        if [ -n "$INPUT_STOP" ]; then
+          with-workbench --stop "$INPUT_STOP"
           exit 0
         fi
 
         # Build arguments using array to handle special characters
-        ARGS=(--version "${{ inputs.version }}" --port "${{ inputs.port }}" --user "${{ inputs.user }}")
-        if [ -n "${{ inputs.image }}" ]; then
-          ARGS+=(--image "${{ inputs.image }}")
+        ARGS=(--version "$INPUT_VERSION" --port "$INPUT_PORT" --user "$INPUT_USER")
+        if [ -n "$INPUT_IMAGE" ]; then
+          ARGS+=(--image "$INPUT_IMAGE")
         fi
-        if [ -n "${{ inputs.password }}" ]; then
-          ARGS+=(--password "${{ inputs.password }}")
+        if [ -n "$INPUT_PASSWORD" ]; then
+          ARGS+=(--password "$INPUT_PASSWORD")
         fi
-        if [ "${{ inputs.quiet }}" = "true" ]; then
+        if [ "$INPUT_QUIET" = "true" ]; then
           ARGS+=(--quiet)
         fi
-        if [ -n "${{ inputs.env }}" ]; then
+        if [ -n "$INPUT_ENV" ]; then
           while IFS= read -r line; do
             if [ -n "$line" ]; then
               ARGS+=(-e "$line")
             fi
-          done <<< "${{ inputs.env }}"
+          done <<< "$INPUT_ENV"
         fi
 
         # Check if command is provided
-        if [ -z "${{ inputs.command }}" ]; then
+        if [ -z "$INPUT_COMMAND" ]; then
           # Start-only mode: output is already in KEY=value format
-          with-workbench "${ARGS[@]}" >> $GITHUB_OUTPUT
+          with-workbench "${ARGS[@]}" >> "$GITHUB_OUTPUT"
         else
-          # Run with command
-          with-workbench "${ARGS[@]}" -- bash <<'SCRIPT'
-        ${{ inputs.command }}
-        SCRIPT
+          # Write command to temp file to avoid heredoc injection
+          SCRIPT_FILE=$(mktemp)
+          trap 'rm -f "$SCRIPT_FILE"' EXIT
+          printf '%s' "$INPUT_COMMAND" > "$SCRIPT_FILE"
+          with-workbench "${ARGS[@]}" -- bash "$SCRIPT_FILE"
         fi
