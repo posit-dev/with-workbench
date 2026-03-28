@@ -275,7 +275,6 @@ def wait_for_workbench(port: int, timeout: float = 120.0) -> bool:
 def execute_command(
     container,
     command: list[str],
-    server_url: str,
     username: str,
     password: str | None,
 ) -> int:
@@ -283,8 +282,10 @@ def execute_command(
 
     Returns the command's exit code, or 126 on Docker API errors.
     """
+    # Inside the container, Workbench always listens on DEFAULT_PORT
+    # regardless of what host port it's mapped to
     env = {
-        "WORKBENCH_URL": server_url,
+        "WORKBENCH_URL": f"http://localhost:{DEFAULT_PORT}",
         "WORKBENCH_USER": username,
         "CONTAINER_ID": container.id,
     }
@@ -303,7 +304,6 @@ def execute_command(
 def run_workbench_command(
     container,
     command: list[str] | None,
-    server_url: str,
     username: str,
     password: str | None,
 ) -> tuple[int, bool]:
@@ -313,9 +313,7 @@ def run_workbench_command(
     In start-only mode (command is None or empty), stop_container is False.
     """
     if command:
-        exit_code = execute_command(
-            container, command, server_url, username, password
-        )
+        exit_code = execute_command(container, command, username, password)
         return (exit_code, True)
     return (0, False)
 
@@ -410,7 +408,6 @@ def main() -> int:
         exit_code, stop_container = run_workbench_command(
             container,
             args.command,
-            server_url,
             args.user,
             actual_password,
         )

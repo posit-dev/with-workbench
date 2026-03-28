@@ -53,6 +53,7 @@ This will:
 | `--user`        | `testuser`  | Username to create for testing.                                                                  |
 | `--password`    | (generated) | Password for test user. Auto-generated if not specified.                                         |
 | `--quiet`       | `false`     | Suppress progress indicators during image pull.                                                  |
+| `-e`, `--env`   |             | Environment variables to pass to the container (KEY=VALUE). Can be repeated.                     |
 | `--stop`        |             | Stop a running container by ID, or use `CONTAINER_ID` env var if not specified.                  |
 
 Example:
@@ -63,7 +64,7 @@ with-workbench --version 2026.01.1 --port 8788 --user myuser
 
 ### Start-Only Mode
 
-When you run `with-workbench`, it starts Workbench and outputs shell variables you can use:
+When you run `with-workbench` without a command, it starts Workbench and outputs shell variables you can use:
 
 ```bash
 with-workbench --license-key $RSW_LICENSE
@@ -85,6 +86,22 @@ echo "Login with $WORKBENCH_USER / $WORKBENCH_PASSWORD"
 with-workbench --stop
 ```
 
+### Command Execution Mode
+
+Run a command inside the Workbench container by using `--` followed by the command:
+
+```bash
+with-workbench -- echo "Hello from inside the container"
+```
+
+The command runs with these environment variables available:
+- `WORKBENCH_URL` - The Workbench server URL
+- `WORKBENCH_USER` - The test username
+- `WORKBENCH_PASSWORD` - The test user's password (if created)
+- `CONTAINER_ID` - The Docker container ID
+
+In command mode, the container is automatically stopped after the command completes. The exit code from `with-workbench` matches the command's exit code.
+
 ### User Handling
 
 The tool creates a PAM user inside the container for authentication:
@@ -100,8 +117,11 @@ The `--version` option maps to Docker image tags:
 | Version     | Image                                        |
 |-------------|----------------------------------------------|
 | `release`   | `rstudio/rstudio-workbench:jammy`            |
+| `latest`    | `rstudio/rstudio-workbench:jammy` (alias for `release`) |
 | `preview`   | `rstudio/rstudio-workbench-preview:jammy-daily` |
 | `2026.01.1` | `rstudio/rstudio-workbench:jammy-2026.01.1`  |
+
+If a specific version is not found in the main registry, the tool will automatically try the preview registry (`rstudio/rstudio-workbench-preview`) as a fallback.
 
 ## GitHub Actions
 
@@ -153,7 +173,7 @@ uv sync
 # Run directly
 uv run python main.py --version 2026.01.1
 
-# Run tests (coming soon)
+# Run tests
 uv run pytest
 ```
 

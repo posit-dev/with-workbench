@@ -205,12 +205,12 @@ def test_execute_command_environment_variables():
     exit_code = main.execute_command(
         container=mock_container,
         command=["echo", "test"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="testpass123",
     )
 
     # THEN environment should contain all Workbench variables
+    # WORKBENCH_URL uses DEFAULT_PORT (8787) since commands run inside the container
     assert captured_env["WORKBENCH_URL"] == "http://localhost:8787"
     assert captured_env["WORKBENCH_USER"] == "testuser"
     assert captured_env["WORKBENCH_PASSWORD"] == "testpass123"
@@ -234,7 +234,6 @@ def test_execute_command_no_password():
     main.execute_command(
         container=mock_container,
         command=["echo", "test"],
-        server_url="http://localhost:8787",
         username="rstudio",
         password=None,
     )
@@ -254,7 +253,6 @@ def test_execute_command_exit_code_success():
     exit_code = main.execute_command(
         container=mock_container,
         command=["true"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -273,7 +271,6 @@ def test_execute_command_exit_code_failure():
     exit_code = main.execute_command(
         container=mock_container,
         command=["failing-command"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -293,7 +290,6 @@ def test_execute_command_outputs_to_stdout():
         main.execute_command(
             container=mock_container,
             command=["echo", "hello"],
-            server_url="http://localhost:8787",
             username="testuser",
             password="pass",
         )
@@ -312,7 +308,6 @@ def test_execute_command_docker_api_error_returns_126():
     exit_code = main.execute_command(
         container=mock_container,
         command=["some-command"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -334,7 +329,6 @@ def test_run_workbench_command_with_command_stops_container():
     exit_code, stop_container = main.run_workbench_command(
         container=mock_container,
         command=["echo", "test"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -354,7 +348,6 @@ def test_run_workbench_command_with_failed_command_stops_container():
     exit_code, stop_container = main.run_workbench_command(
         container=mock_container,
         command=["failing-command"],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -373,7 +366,6 @@ def test_run_workbench_command_start_only_mode_no_stop():
     exit_code, stop_container = main.run_workbench_command(
         container=mock_container,
         command=None,
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
@@ -392,7 +384,6 @@ def test_run_workbench_command_empty_command_is_start_only():
     exit_code, stop_container = main.run_workbench_command(
         container=mock_container,
         command=[],
-        server_url="http://localhost:8787",
         username="testuser",
         password="pass",
     )
