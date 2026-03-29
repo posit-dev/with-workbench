@@ -70,6 +70,10 @@ def parse_args():
         metavar="CONTAINER_ID",
         help="Stop a running container (uses CONTAINER_ID env var if not specified)",
     )
+    parser.add_argument(
+        "--script",
+        help="Script content to execute inside the container",
+    )
 
     # Handle -- separator to capture command arguments
     if "--" in sys.argv:
@@ -135,24 +139,33 @@ def pull_image(client, base_image: str, tag: str, quiet: bool) -> None:
         for _ in pull_stream:
             pass
     else:
-        layer_progress = {}
-        last_percent = -1
+        layer_sizes = {}
+        completed_layers = set()
+        last_display = ""
         for chunk in pull_stream:
-            if "id" in chunk and "progressDetail" in chunk:
-                detail = chunk["progressDetail"]
-                if "current" in detail and "total" in detail:
-                    layer_progress[chunk["id"]] = (detail["current"], detail["total"])
+            layer_id = chunk.get("id")
+            status = chunk.get("status", "")
+            detail = chunk.get("progressDetail", {})
 
-            if layer_progress:
-                total_current = sum(p[0] for p in layer_progress.values())
-                total_size = sum(p[1] for p in layer_progress.values())
-                if total_size > 0:
-                    percent = int(total_current * 100 / total_size)
-                    if percent != last_percent:
-                        print(f"\rPulling: {percent}%", end="", flush=True, file=sys.stderr)
-                        last_percent = percent
+            if layer_id and "total" in detail:
+                layer_sizes[layer_id] = detail["total"]
 
-        print("\r" + " " * 20 + "\r", end="", file=sys.stderr)
+            if layer_id and status in ("Pull complete", "Already exists"):
+                completed_layers.add(layer_id)
+
+            completed_bytes = sum(
+                layer_sizes.get(lid, 0) for lid in completed_layers
+            )
+            if completed_bytes > 0:
+                if completed_bytes >= 1_000_000_000:
+                    display = f"Pulling: {completed_bytes / 1_000_000_000:.1f} GB"
+                else:
+                    display = f"Pulling: {completed_bytes // 1_000_000} MB"
+                if display != last_display:
+                    print(f"\r{display}    ", end="", flush=True, file=sys.stderr)
+                    last_display = display
+
+        print("\r" + " " * 25 + "\r", end="", file=sys.stderr)
 
     print(f"Successfully pulled {image_name}", file=sys.stderr)
 
@@ -277,6 +290,7 @@ def execute_command(
     command: list[str],
     username: str,
     password: str | None,
+    script: str | None = None,
 ) -> int:
     """Execute a command inside the Workbench container.
 
@@ -291,6 +305,13 @@ def execute_command(
     }
     if password:
         env["WORKBENCH_PASSWORD"] = password
+    if script:
+        env["__SCRIPT__"] = script
+
+    # If script content provided, run it via bash using env var
+    # (avoids shell quoting issues by passing content as env var)
+    if script:
+        command = ["bash", "-c", 'eval "$__SCRIPT__"']
 
     try:
         exit_code, output = container.exec_run(command, environment=env)
@@ -306,14 +327,17 @@ def run_workbench_command(
     command: list[str] | None,
     username: str,
     password: str | None,
+    script: str | None = None,
 ) -> tuple[int, bool]:
     """Execute command against Workbench and determine container cleanup.
 
     Returns (exit_code, stop_container). In command mode, stop_container is True.
     In start-only mode (command is None or empty), stop_container is False.
     """
-    if command:
-        exit_code = execute_command(container, command, username, password)
+    if command or script:
+        exit_code = execute_command(
+            container, command or [], username, password, script
+        )
         return (exit_code, True)
     return (0, False)
 
@@ -410,6 +434,7 @@ def main() -> int:
             args.command,
             args.user,
             actual_password,
+            args.script,
         )
 
         if not stop_container:

@@ -107,7 +107,7 @@ runs:
           # Start-only mode: output is already in KEY=value format
           with-workbench "${ARGS[@]}" >> "$GITHUB_OUTPUT"
         else
-          # Pass command via bash -c (temp files don't work because
-          # command runs inside Docker container, not on host)
-          with-workbench "${ARGS[@]}" -- bash -c "$INPUT_COMMAND"
+          # Pass script via --script arg (passed as env var to container,
+          # avoiding shell expansion on host and temp file issues)
+          with-workbench "${ARGS[@]}" --script "$INPUT_COMMAND"
         fi

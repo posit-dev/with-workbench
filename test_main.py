@@ -316,6 +316,50 @@ def test_execute_command_docker_api_error_returns_126():
     assert exit_code == 126
 
 
+def test_execute_command_with_script():
+    """Test that script content is passed via __SCRIPT__ env var and run via bash."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (0, b"script output")
+
+    # WHEN script content is provided
+    with patch("sys.stdout.write"):
+        main.execute_command(
+            container=mock_container,
+            command=[],
+            username="testuser",
+            password="pass",
+            script='echo "hello $WORKBENCH_URL"',
+        )
+
+    # THEN command should be bash -c with eval, and __SCRIPT__ should be in env
+    call_args = mock_container.exec_run.call_args
+    assert call_args[0][0] == ["bash", "-c", 'eval "$__SCRIPT__"']
+    env = call_args[1]["environment"]
+    assert env["__SCRIPT__"] == 'echo "hello $WORKBENCH_URL"'
+
+
+def test_run_workbench_command_with_script_stops_container():
+    """Test that run_workbench_command returns stop_container=True when script provided."""
+    mock_container = MagicMock()
+    mock_container.id = "container123"
+    mock_container.exec_run.return_value = (0, b"output")
+
+    # WHEN script is provided (no command)
+    with patch("sys.stdout.write"):
+        exit_code, stop_container = main.run_workbench_command(
+            container=mock_container,
+            command=None,
+            username="testuser",
+            password="pass",
+            script="echo test",
+        )
+
+    # THEN stop_container should be True
+    assert stop_container is True
+    assert exit_code == 0
+
+
 # === Container Lifecycle ===
 
 
@@ -689,6 +733,12 @@ if __name__ == "__main__":
 
     test_execute_command_docker_api_error_returns_126()
     print("✓ test_execute_command_docker_api_error_returns_126 passed")
+
+    test_execute_command_with_script()
+    print("✓ test_execute_command_with_script passed")
+
+    test_run_workbench_command_with_script_stops_container()
+    print("✓ test_run_workbench_command_with_script_stops_container passed")
 
     test_run_workbench_command_with_command_stops_container()
     print("✓ test_run_workbench_command_with_command_stops_container passed")
