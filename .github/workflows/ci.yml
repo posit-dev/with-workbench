@@ -33,14 +33,14 @@ jobs:
         uses: ./
         with:
           version: release
-          license-key: ${{ secrets.RSW_LICENSE }}
+          license-key: ${{ secrets.PWB_LICENSE }}
           command: 'curl -f $WORKBENCH_URL/health-check'
 
       - name: Test with-workbench action (multiline)
         uses: ./
         with:
           version: release
-          license-key: ${{ secrets.RSW_LICENSE }}
+          license-key: ${{ secrets.PWB_LICENSE }}
           command: |
             set -euo pipefail
             echo "Testing multiline command"
@@ -61,7 +61,7 @@ jobs:
         uses: ./
         with:
           version: release
-          license-key: ${{ secrets.RSW_LICENSE }}
+          license-key: ${{ secrets.PWB_LICENSE }}
 
       - name: Verify outputs are set
         run: |
@@ -125,4 +125,4 @@ jobs:
               echo "CLI test passed - health check returned OK"
             '
         env:
-          RSW_LICENSE: ${{ secrets.RSW_LICENSE }}
+          RSW_LICENSE: ${{ secrets.PWB_LICENSE }}
