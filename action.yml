@@ -107,9 +107,7 @@ runs:
           # Start-only mode: output is already in KEY=value format
           with-workbench "${ARGS[@]}" >> "$GITHUB_OUTPUT"
         else
-          # Write command to temp file to avoid heredoc injection
-          SCRIPT_FILE=$(mktemp)
-          trap 'rm -f "$SCRIPT_FILE"' EXIT
-          printf '%s' "$INPUT_COMMAND" > "$SCRIPT_FILE"
-          with-workbench "${ARGS[@]}" -- bash "$SCRIPT_FILE"
+          # Pass command via bash -c (temp files don't work because
+          # command runs inside Docker container, not on host)
+          with-workbench "${ARGS[@]}" -- bash -c "$INPUT_COMMAND"
         fi
