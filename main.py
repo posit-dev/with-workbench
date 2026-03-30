@@ -305,12 +305,11 @@ def execute_command(
     }
     if password:
         env["WORKBENCH_PASSWORD"] = password
-    if script:
-        env["__SCRIPT__"] = script
 
     # If script content provided, run it via bash using env var
     # (avoids shell quoting issues by passing content as env var)
     if script:
+        env["__SCRIPT__"] = script
         command = ["bash", "-c", 'eval "$__SCRIPT__"']
 
     try:
@@ -372,6 +371,8 @@ def main() -> int:
     # Validate args
     if args.image and args.version != DEFAULT_VERSION:
         raise RuntimeError("Cannot specify both --image and --version")
+    if args.script and args.command:
+        raise RuntimeError("Cannot specify both --script and command after --")
 
     client = get_docker_client()
 

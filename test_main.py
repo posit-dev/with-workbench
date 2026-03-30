@@ -360,6 +360,70 @@ def test_run_workbench_command_with_script_stops_container():
     assert exit_code == 0
 
 
+def test_execute_command_with_multiline_script():
+    """Test that multiline scripts preserve newlines in env var."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (0, b"output")
+
+    multiline_script = "set -euo pipefail\necho line1\necho line2\nif [ 1 -eq 1 ]; then\n  echo nested\nfi"
+
+    # WHEN multiline script is provided
+    with patch("sys.stdout.write"):
+        main.execute_command(
+            container=mock_container,
+            command=[],
+            username="testuser",
+            password="pass",
+            script=multiline_script,
+        )
+
+    # THEN newlines should be preserved in __SCRIPT__
+    env = mock_container.exec_run.call_args[1]["environment"]
+    assert env["__SCRIPT__"] == multiline_script
+    assert "\n" in env["__SCRIPT__"]
+
+
+def test_execute_command_script_with_special_characters():
+    """Test that scripts with quotes, $vars, and backticks are passed through."""
+    mock_container = MagicMock()
+    mock_container.id = "abc123"
+    mock_container.exec_run.return_value = (0, b"output")
+
+    script_with_special = 'echo "Hello $WORKBENCH_URL" && echo \'single\' && VAR=test'
+
+    # WHEN script has special shell characters
+    with patch("sys.stdout.write"):
+        main.execute_command(
+            container=mock_container,
+            command=[],
+            username="testuser",
+            password="pass",
+            script=script_with_special,
+        )
+
+    # THEN special characters should be preserved exactly
+    env = mock_container.exec_run.call_args[1]["environment"]
+    assert env["__SCRIPT__"] == script_with_special
+    assert "$WORKBENCH_URL" in env["__SCRIPT__"]
+    assert "'" in env["__SCRIPT__"]
+
+
+def test_script_and_command_mutually_exclusive():
+    """Test that providing both --script and command raises an error."""
+    # Simulate args with both script and command
+    with patch("main.get_docker_client"), patch("os.environ.get", return_value="key"):
+        sys.argv = ["main.py", "--script", "echo test", "--", "bash", "-c", "echo cmd"]
+
+        # WHEN both script and command are provided
+        # THEN should raise RuntimeError
+        try:
+            main.main()
+            assert False, "Should have raised RuntimeError"
+        except RuntimeError as e:
+            assert "Cannot specify both --script and command" in str(e)
+
+
 # === Container Lifecycle ===
 
 
@@ -739,6 +803,15 @@ if __name__ == "__main__":
 
     test_run_workbench_command_with_script_stops_container()
     print("✓ test_run_workbench_command_with_script_stops_container passed")
+
+    test_execute_command_with_multiline_script()
+    print("✓ test_execute_command_with_multiline_script passed")
+
+    test_execute_command_script_with_special_characters()
+    print("✓ test_execute_command_script_with_special_characters passed")
+
+    test_script_and_command_mutually_exclusive()
+    print("✓ test_script_and_command_mutually_exclusive passed")
 
     test_run_workbench_command_with_command_stops_container()
     print("✓ test_run_workbench_command_with_command_stops_container passed")
