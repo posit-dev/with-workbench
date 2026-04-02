@@ -135,37 +135,17 @@ def pull_image(client, base_image: str, tag: str, quiet: bool) -> None:
         base_image, tag=tag, platform="linux/amd64", stream=True, decode=True
     )
 
-    if quiet:
-        for _ in pull_stream:
-            pass
-    else:
-        layer_sizes = {}
-        completed_layers = set()
-        last_display = ""
-        for chunk in pull_stream:
-            layer_id = chunk.get("id")
-            status = chunk.get("status", "")
-            detail = chunk.get("progressDetail", {})
-
-            if layer_id and "total" in detail:
-                layer_sizes[layer_id] = detail["total"]
-
-            if layer_id and status in ("Pull complete", "Already exists"):
-                completed_layers.add(layer_id)
-
-            completed_bytes = sum(
-                layer_sizes.get(lid, 0) for lid in completed_layers
-            )
-            if completed_bytes > 0:
-                if completed_bytes >= 1_000_000_000:
-                    display = f"Pulling: {completed_bytes / 1_000_000_000:.1f} GB"
-                else:
-                    display = f"Pulling: {completed_bytes // 1_000_000} MB"
-                if display != last_display:
-                    print(f"\r{display}    ", end="", flush=True, file=sys.stderr)
-                    last_display = display
-
-        print("\r" + " " * 25 + "\r", end="", file=sys.stderr)
+    layers_done = set()
+    for chunk in pull_stream:
+        if quiet:
+            continue
+        layer_id = chunk.get("id")
+        status = chunk.get("status", "")
+        if layer_id and status in ("Pull complete", "Already exists"):
+            layers_done.add(layer_id)
+            print(f"\rPulled {len(layers_done)} layers...", end="", flush=True, file=sys.stderr)
+    if not quiet and layers_done:
+        print(file=sys.stderr)
 
     print(f"Successfully pulled {image_name}", file=sys.stderr)
 
