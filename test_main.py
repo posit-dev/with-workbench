@@ -599,6 +599,91 @@ def test_env_var_without_equals_is_ignored():
         sys.argv = original_argv
 
 
+def test_pull_image_raises_when_stream_reports_error():
+    """A failed pull must raise, not print success.
+
+    The Docker daemon reports mid-pull failures as an ``error`` chunk in the
+    body of the /images/create stream, *not* as an HTTP error status, so
+    ``client.api.pull()`` never raises for them. Swallowing that chunk turns a
+    broken pull into a bogus "Successfully pulled" followed much later by a
+    baffling "No such image" from containers.create().
+    """
+    mock_client = MagicMock()
+    mock_client.api.pull.return_value = iter(
+        [
+            {"id": "abc123", "status": "Pull complete"},
+            {
+                "error": "toomanyrequests: You have reached your pull rate limit",
+                "errorDetail": {
+                    "message": "toomanyrequests: You have reached your pull rate limit"
+                },
+            },
+        ]
+    )
+
+    try:
+        main.pull_image(mock_client, "rstudio/rstudio-workbench", "jammy", quiet=True)
+    except docker.errors.APIError as e:
+        assert "pull rate limit" in str(e)
+    else:
+        raise AssertionError("pull_image() did not raise on a failed pull")
+
+
+def test_pull_image_succeeds_on_clean_stream():
+    """A pull whose stream carries no error chunk still succeeds."""
+    mock_client = MagicMock()
+    mock_client.api.pull.return_value = iter(
+        [
+            {"id": "abc123", "status": "Pull complete"},
+            {"id": "def456", "status": "Already exists"},
+            {"status": "Status: Downloaded newer image for rstudio/rstudio-workbench:jammy"},
+        ]
+    )
+
+    main.pull_image(mock_client, "rstudio/rstudio-workbench", "jammy", quiet=True)
+
+
+def test_ensure_image_surfaces_stream_error_when_no_local_copy():
+    """A failed pull with no cached image reports the registry's reason.
+
+    Regression test for the confusing failure mode: because pull_image() used
+    to swallow the error chunk, ensure_image()'s fallback chain never ran and
+    the operator saw "No such image" instead of why the pull failed.
+    """
+    mock_client = MagicMock()
+    # side_effect, not return_value: ensure_image() retries against the preview
+    # registry, and a single iterator would be exhausted (and so look clean) by
+    # the time the second pull consumes it.
+    mock_client.api.pull.side_effect = lambda *a, **kw: iter(
+        [{"error": "manifest unknown", "errorDetail": {"message": "manifest unknown"}}]
+    )
+    mock_client.images.get.side_effect = docker.errors.ImageNotFound("not cached")
+
+    try:
+        main.ensure_image(
+            mock_client, "rstudio/rstudio-workbench", "jammy", "release", quiet=True
+        )
+    except RuntimeError as e:
+        assert "manifest unknown" in str(e)
+    else:
+        raise AssertionError("ensure_image() did not raise on a failed pull")
+
+
+def test_ensure_image_uses_cached_image_when_pull_stream_errors():
+    """A failed pull falls back to a locally cached image when one exists."""
+    mock_client = MagicMock()
+    mock_client.api.pull.side_effect = lambda *a, **kw: iter(
+        [{"error": "manifest unknown", "errorDetail": {"message": "manifest unknown"}}]
+    )
+    mock_client.images.get.return_value = MagicMock()
+
+    base, tag = main.ensure_image(
+        mock_client, "rstudio/rstudio-workbench", "jammy", "release", quiet=True
+    )
+
+    assert (base, tag) == ("rstudio/rstudio-workbench", "jammy")
+
+
 def test_env_vars_passed_to_container():
     """Test that env vars from -e flags are passed to client.containers.run()."""
     mock_client = MagicMock()
@@ -923,5 +1008,17 @@ if __name__ == "__main__":
 
     test_env_vars_passed_to_container()
     print("✓ test_env_vars_passed_to_container passed")
+
+    test_pull_image_raises_when_stream_reports_error()
+    print("✓ test_pull_image_raises_when_stream_reports_error passed")
+
+    test_pull_image_succeeds_on_clean_stream()
+    print("✓ test_pull_image_succeeds_on_clean_stream passed")
+
+    test_ensure_image_surfaces_stream_error_when_no_local_copy()
+    print("✓ test_ensure_image_surfaces_stream_error_when_no_local_copy passed")
+
+    test_ensure_image_uses_cached_image_when_pull_stream_errors()
+    print("✓ test_ensure_image_uses_cached_image_when_pull_stream_errors passed")
 
     print("\nAll tests passed!")

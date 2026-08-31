@@ -137,6 +137,17 @@ def pull_image(client, base_image: str, tag: str, quiet: bool) -> None:
 
     layers_done = set()
     for chunk in pull_stream:
+        # The daemon reports a mid-pull failure as an "error" chunk in the body
+        # of the stream, not as an HTTP error status, so client.api.pull() has
+        # already returned successfully by the time the pull breaks. Ignoring
+        # the chunk leaves a half-pulled image behind and reports success, and
+        # the real failure only resurfaces later as an opaque "No such image"
+        # from containers.create(). Raise here, while we still have the reason.
+        if "error" in chunk:
+            detail = chunk.get("errorDetail") or {}
+            raise docker.errors.APIError(
+                f"{image_name}: {detail.get('message') or chunk['error']}"
+            )
         if quiet:
             continue
         layer_id = chunk.get("id")
