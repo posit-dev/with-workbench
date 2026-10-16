@@ -1,8 +1,10 @@
+import io
 import os
 import socket
 import string
 import subprocess
 import sys
+from contextlib import redirect_stderr
 from unittest.mock import MagicMock, patch
 
 import docker
@@ -767,6 +769,60 @@ def test_latest_always_pulls():
     assert should_pull is True
 
 
+def test_redact_product_key_from_license_manager_output():
+    line = '{"status":"activated","product-key":"AAAA-BBBB-CCCC","has-key":true}'
+    assert main.redact(line, None) == '{"status":"activated","product-key":"<redacted>","has-key":true}'
+
+
+def test_redact_license_key_anywhere():
+    assert main.redact("activating AAAA-BBBB-CCCC now", "AAAA-BBBB-CCCC") == "activating <redacted> now"
+
+
+def test_container_logs_redacts_license_key():
+    container = MagicMock()
+    container.logs.return_value = b'key AAAA-BBBB-CCCC\n{"product-key":"AAAA-BBBB-CCCC"}'
+    logs = main.container_logs(container, "AAAA-BBBB-CCCC")
+    assert "AAAA-BBBB-CCCC" not in logs
+
+
+def test_stop_container_deactivates_license_before_stopping():
+    container = MagicMock()
+    container.status = "running"
+    container.exec_run.return_value = (0, b"")
+
+    main.stop_container(container)
+
+    container.exec_run.assert_called_once_with(
+        ["/usr/lib/rstudio-server/bin/license-manager", "deactivate"]
+    )
+    calls = [name for name, *_ in container.method_calls]
+    assert calls.index("exec_run") < calls.index("stop")
+
+
+def test_stop_container_skips_deactivation_when_not_running():
+    container = MagicMock()
+    container.status = "exited"
+
+    main.stop_container(container)
+
+    container.exec_run.assert_not_called()
+    container.stop.assert_called_once()
+
+
+def test_stop_container_still_stops_if_deactivation_fails():
+    container = MagicMock()
+    container.status = "running"
+    container.exec_run.return_value = (1, b'{"product-key":"AAAA-BBBB-CCCC"}')
+
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        main.stop_container(container)
+
+    container.stop.assert_called_once()
+    assert "license deactivation failed" in stderr.getvalue()
+    assert "AAAA-BBBB-CCCC" not in stderr.getvalue()
+
+
 if __name__ == "__main__":
     test_parse_args_with_command()
     print("✓ test_parse_args_with_command passed")
@@ -923,5 +979,23 @@ if __name__ == "__main__":
 
     test_env_vars_passed_to_container()
     print("✓ test_env_vars_passed_to_container passed")
+
+    test_redact_product_key_from_license_manager_output()
+    print("✓ test_redact_product_key_from_license_manager_output passed")
+
+    test_redact_license_key_anywhere()
+    print("✓ test_redact_license_key_anywhere passed")
+
+    test_container_logs_redacts_license_key()
+    print("✓ test_container_logs_redacts_license_key passed")
+
+    test_stop_container_deactivates_license_before_stopping()
+    print("✓ test_stop_container_deactivates_license_before_stopping passed")
+
+    test_stop_container_skips_deactivation_when_not_running()
+    print("✓ test_stop_container_skips_deactivation_when_not_running passed")
+
+    test_stop_container_still_stops_if_deactivation_fails()
+    print("✓ test_stop_container_still_stops_if_deactivation_fails passed")
 
     print("\nAll tests passed!")

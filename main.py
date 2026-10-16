@@ -1,5 +1,6 @@
 import argparse
 import os
+import re
 import secrets
 import socket
 import string
@@ -190,6 +191,48 @@ def ensure_image(
         raise RuntimeError(f"Failed to pull image: {e}")
 
 
+# The image logs the license-manager activation result as JSON, including the product key.
+PRODUCT_KEY_PATTERN = re.compile(r'("product-key"\s*:\s*")[^"]*(")')
+
+
+def redact(text: str, license_key: str | None) -> str:
+    """Remove the license key from text before printing it (e.g. container logs in CI)."""
+    text = PRODUCT_KEY_PATTERN.sub(r"\1<redacted>\2", text)
+    if license_key:
+        text = text.replace(license_key, "<redacted>")
+    return text
+
+
+def container_logs(container, license_key: str | None) -> str:
+    """Return container logs with the license key redacted."""
+    return redact(container.logs().decode("utf-8", errors="replace"), license_key)
+
+
+def stop_container(container) -> None:
+    """Deactivate the license, then stop the container.
+
+    The image's startup script deactivates the license in an EXIT trap, but it runs
+    rserver as a foreground child under supervisord, so on `docker stop` the trap
+    typically doesn't run before the container is killed -- leaking a license
+    activation on every run. Deactivating explicitly first avoids that.
+    """
+    container.reload()
+    if container.status == "running":
+        try:
+            exit_code, output = container.exec_run(
+                ["/usr/lib/rstudio-server/bin/license-manager", "deactivate"]
+            )
+            if exit_code != 0:
+                print(
+                    "Warning: license deactivation failed: "
+                    f"{redact(output.decode('utf-8', errors='replace'), None)}",
+                    file=sys.stderr,
+                )
+        except docker.errors.APIError as e:
+            print(f"Warning: license deactivation failed: {e}", file=sys.stderr)
+    container.stop()
+
+
 def generate_password(length: int = 16) -> str:
     """Generate a random password."""
     alphabet = string.ascii_letters + string.digits
@@ -335,7 +378,7 @@ def main() -> int:
         client = get_docker_client()
         try:
             container = client.containers.get(container_id)
-            container.stop()
+            stop_container(container)
             print(f"Stopped container {container_id}", file=sys.stderr)
             return 0
         except docker.errors.NotFound:
@@ -395,7 +438,7 @@ def main() -> int:
     )
 
     server_url = f"http://localhost:{host_port}"
-    stop_container = True  # Default to stopping; start-only mode will set to False
+    should_stop = True  # Default to stopping; start-only mode will set to False
 
     try:
         print(
@@ -403,14 +446,14 @@ def main() -> int:
         )
         if not wait_for_workbench(host_port, timeout=120.0):
             print("\nContainer logs:", file=sys.stderr)
-            print(container.logs().decode("utf-8", errors="replace"), file=sys.stderr)
+            print(container_logs(container, license_key), file=sys.stderr)
             raise RuntimeError("Workbench did not start within 120 seconds")
 
         # Create test user
         actual_password = create_test_user(container, args.user, password)
 
         # Execute user command or enter start-only mode
-        exit_code, stop_container = run_workbench_command(
+        exit_code, should_stop = run_workbench_command(
             container,
             args.command,
             args.user,
@@ -418,7 +461,7 @@ def main() -> int:
             args.script,
         )
 
-        if not stop_container:
+        if not should_stop:
             # Start-only mode: output credentials
             print(f"WORKBENCH_URL={server_url}")
             print(f"WORKBENCH_USER={args.user}")
@@ -435,8 +478,8 @@ def main() -> int:
 
         return exit_code
     finally:
-        if stop_container:
-            container.stop()
+        if should_stop:
+            stop_container(container)
 
 
 if __name__ == "__main__":
