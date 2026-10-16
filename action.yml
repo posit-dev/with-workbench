@@ -22,6 +22,9 @@ inputs:
   password:
     description: 'Password for test user (auto-generated if not specified)'
     required: false
+  api-token:
+    description: 'Enable the Workbench API and mint an API token of this type (user, admin or super-admin) for the test user'
+    required: false
   quiet:
     description: 'Suppress progress indicators during image pull'
     required: false
@@ -46,6 +49,12 @@ outputs:
   WORKBENCH_PASSWORD:
     description: 'Test user password (only set when no command is provided)'
     value: ${{ steps.run.outputs.WORKBENCH_PASSWORD }}
+  WORKBENCH_API_KEY:
+    description: 'Workbench API token (only set with api-token and when no command is provided)'
+    value: ${{ steps.run.outputs.WORKBENCH_API_KEY }}
+  WORKBENCH_VERSION:
+    description: 'Workbench server version (only set with api-token and when no command is provided)'
+    value: ${{ steps.run.outputs.WORKBENCH_VERSION }}
   CONTAINER_ID:
     description: 'Docker container ID (only set when no command is provided)'
     value: ${{ steps.run.outputs.CONTAINER_ID }}
@@ -74,6 +83,7 @@ runs:
         INPUT_IMAGE: ${{ inputs.image }}
         INPUT_PASSWORD: ${{ inputs.password }}
         INPUT_QUIET: ${{ inputs.quiet }}
+        INPUT_API_TOKEN: ${{ inputs.api-token }}
         INPUT_ENV: ${{ inputs.env }}
         INPUT_COMMAND: ${{ inputs.command }}
       run: |
@@ -94,6 +104,9 @@ runs:
         if [ "$INPUT_QUIET" = "true" ]; then
           ARGS+=(--quiet)
         fi
+        if [ -n "$INPUT_API_TOKEN" ]; then
+          ARGS+=(--api-token "$INPUT_API_TOKEN")
+        fi
         if [ -n "$INPUT_ENV" ]; then
           while IFS= read -r line; do
             if [ -n "$line" ]; then
@@ -105,7 +118,12 @@ runs:
         # Check if command is provided
         if [ -z "$INPUT_COMMAND" ]; then
           # Start-only mode: output is already in KEY=value format
-          with-workbench "${ARGS[@]}" >> "$GITHUB_OUTPUT"
+          OUTPUT=$(with-workbench "${ARGS[@]}")
+          API_KEY=$(sed -n 's/^WORKBENCH_API_KEY=//p' <<< "$OUTPUT")
+          if [ -n "$API_KEY" ]; then
+            echo "::add-mask::$API_KEY"
+          fi
+          echo "$OUTPUT" >> "$GITHUB_OUTPUT"
         else
           # Pass script via --script arg (passed as env var to container,
           # avoiding shell expansion on host and temp file issues)

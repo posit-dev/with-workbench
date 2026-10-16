@@ -51,6 +51,27 @@ jobs:
             [ -n "$WORKBENCH_USER" ] || exit 1
             echo "Multiline test passed"
 
+  test-action-api-token:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Test with-workbench action with an admin API token
+        uses: ./
+        with:
+          version: release
+          license-key: ${{ secrets.PWB_LICENSE }}
+          api-token: admin
+          command: |
+            set -euo pipefail
+            [ -n "$WORKBENCH_API_KEY" ] || exit 1
+            curl -f -X POST \
+              -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"method":"get_historical_session","kwparams":{"include_jobs":true}}' \
+              "$WORKBENCH_URL/api/get_historical_session" | grep -q '"result"'
+            echo "API token and audit database work"
+
   test-action-start-only:
     runs-on: ubuntu-latest
     steps:

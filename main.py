@@ -1,9 +1,12 @@
 import argparse
+import base64
+import io
 import os
 import secrets
 import socket
 import string
 import sys
+import tarfile
 import time
 
 import docker
@@ -14,6 +17,21 @@ IMAGE_PREVIEW = "rstudio/rstudio-workbench-preview"
 DEFAULT_VERSION = "release"
 DEFAULT_PORT = 8787
 DEFAULT_USER = "testuser"
+API_TOKEN_TYPES = ("user", "admin", "super-admin")
+
+# Appended to /etc/rstudio/rserver.conf for --api-token. Without the workbench-api flags,
+# Workbench rejects Bearer tokens (e.g. "workbench-api-admin-enabled=1 missing in
+# rserver.conf"); without audited-jobs, launch_audited_job fails ("Audited jobs is not enabled").
+WORKBENCH_API_CONF = """
+workbench-api-enabled=1
+workbench-api-admin-enabled=1
+workbench-api-super-admin-enabled=1
+audited-jobs=1
+"""
+
+# Historical sessions/jobs (get_historical_session) fail with "Audit DB must be
+# initialized" unless an audit database is configured; SQLite needs no external service.
+AUDIT_DATABASE_CONF = "provider=sqlite\n"
 
 
 def parse_args():
@@ -49,6 +67,12 @@ def parse_args():
     parser.add_argument(
         "--password",
         help="Password for test user (auto-generated if not specified)",
+    )
+    parser.add_argument(
+        "--api-token",
+        choices=API_TOKEN_TYPES,
+        help="Enable the Workbench API and mint an API token of this type for --user "
+        "(output as WORKBENCH_API_KEY)",
     )
     parser.add_argument(
         "--quiet",
@@ -229,6 +253,106 @@ def create_test_user(container, username: str, password: str) -> str | None:
     return password
 
 
+def read_container_file(container, path: str) -> str:
+    """Read a text file from a (possibly not yet started) container."""
+    stream, _ = container.get_archive(path)
+    with tarfile.open(fileobj=io.BytesIO(b"".join(stream))) as tar:
+        member = tar.next()
+        return tar.extractfile(member).read().decode("utf-8")
+
+
+def write_container_files(container, directory: str, files: dict[str, str]) -> None:
+    """Write text files into a directory of a (possibly not yet started) container."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, content in files.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o600 if name == "audit-database.conf" else 0o644
+            tar.addfile(info, io.BytesIO(data))
+    container.put_archive(directory, buffer.getvalue())
+
+
+def enable_workbench_api(container) -> None:
+    """Enable the Workbench API and a SQLite audit database before Workbench starts.
+
+    Done on the created-but-not-started container, so it works with any image and
+    rserver never needs a restart.
+    """
+    rserver_conf = read_container_file(container, "/etc/rstudio/rserver.conf")
+    write_container_files(
+        container,
+        "/etc/rstudio",
+        {
+            "rserver.conf": rserver_conf.rstrip("\n") + "\n" + WORKBENCH_API_CONF,
+            "audit-database.conf": AUDIT_DATABASE_CONF,
+        },
+    )
+
+
+def generate_api_token() -> str:
+    """Generate a 32 character token from the base64 character set, like Workbench does."""
+    return base64.b64encode(secrets.token_bytes(24)).decode("ascii")
+
+
+def create_api_token(container, username: str, token_type: str) -> str:
+    """Register the user with Workbench and mint an API token of the given type for it.
+
+    The token value is generated here and passed via --token-env, so it doesn't appear
+    in process arguments or command output.
+    """
+    # Tokens can only be minted for users in Workbench's own user database; admin tokens
+    # additionally require an admin user. The positional <0|1> admin flag is accepted by
+    # old and new versions alike.
+    is_admin = "0" if token_type == "user" else "1"
+    exit_code, output = container.exec_run(
+        ["rstudio-server", "add-user", username, is_admin]
+    )
+    if exit_code != 0 and b"already exists" not in output:
+        raise RuntimeError(f"Failed to add Workbench user: {output.decode()}")
+
+    token = generate_api_token()
+    exit_code, output = container.exec_run(
+        [
+            "rstudio-server",
+            "generate-api-token",
+            token_type,
+            "with-workbench",
+            username,
+            "--token-env",
+            "WITH_WORKBENCH_API_TOKEN",
+        ],
+        environment={"WITH_WORKBENCH_API_TOKEN": token},
+    )
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Failed to generate API token: {output.decode().replace(token, '<redacted>')}"
+        )
+    print(f"Created {token_type} API token for {username}", file=sys.stderr)
+    return token
+
+
+def get_workbench_version(server_url: str, api_key: str) -> str:
+    """Get the server version via the Workbench API, which also verifies the token.
+
+    Unlike other API methods, `version` returns its payload bare
+    ({"version": {...}, "features": [...]}) rather than wrapped in {"result": ...}.
+    """
+    response = requests.post(
+        f"{server_url}/api/version",
+        json={"method": "version", "kwparams": {}},
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Workbench API rejected the generated token (HTTP {response.status_code})"
+        )
+    version = response.json().get("version") or {}
+    return ".".join(str(version.get(k, "0")) for k in ("major", "minor", "patch"))
+
+
 def is_port_available(port: int) -> bool:
     """Check if a port is available for binding."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -271,6 +395,7 @@ def execute_command(
     username: str,
     password: str | None,
     script: str | None = None,
+    api_key: str | None = None,
 ) -> int:
     """Execute a command inside the Workbench container.
 
@@ -285,6 +410,8 @@ def execute_command(
     }
     if password:
         env["WORKBENCH_PASSWORD"] = password
+    if api_key:
+        env["WORKBENCH_API_KEY"] = api_key
 
     # If script content provided, run it via bash using env var
     # (avoids shell quoting issues by passing content as env var)
@@ -307,6 +434,7 @@ def run_workbench_command(
     username: str,
     password: str | None,
     script: str | None = None,
+    api_key: str | None = None,
 ) -> tuple[int, bool]:
     """Execute command against Workbench and determine container cleanup.
 
@@ -315,7 +443,7 @@ def run_workbench_command(
     """
     if command or script:
         exit_code = execute_command(
-            container, command or [], username, password, script
+            container, command or [], username, password, script, api_key
         )
         return (exit_code, True)
     return (0, False)
@@ -386,13 +514,16 @@ def main() -> int:
                 container_env[key] = value
 
     print(f"Starting Workbench container...", file=sys.stderr)
-    container = client.containers.run(
+    container = client.containers.create(
         image=image_name,
         detach=True,
         ports={f"{DEFAULT_PORT}/tcp": host_port},
         platform="linux/amd64",
         environment=container_env,
     )
+    if args.api_token:
+        enable_workbench_api(container)
+    container.start()
 
     server_url = f"http://localhost:{host_port}"
     stop_container = True  # Default to stopping; start-only mode will set to False
@@ -409,6 +540,13 @@ def main() -> int:
         # Create test user
         actual_password = create_test_user(container, args.user, password)
 
+        api_key = None
+        version = None
+        if args.api_token:
+            api_key = create_api_token(container, args.user, args.api_token)
+            version = get_workbench_version(server_url, api_key)
+            print(f"Running Posit Workbench {version}", file=sys.stderr)
+
         # Execute user command or enter start-only mode
         exit_code, stop_container = run_workbench_command(
             container,
@@ -416,6 +554,7 @@ def main() -> int:
             args.user,
             actual_password,
             args.script,
+            api_key,
         )
 
         if not stop_container:
@@ -424,6 +563,9 @@ def main() -> int:
             print(f"WORKBENCH_USER={args.user}")
             if actual_password:
                 print(f"WORKBENCH_PASSWORD={actual_password}")
+            if api_key:
+                print(f"WORKBENCH_API_KEY={api_key}")
+                print(f"WORKBENCH_VERSION={version}")
             print(f"CONTAINER_ID={container.id}")
 
             print(f"\nWorkbench is running at {server_url}", file=sys.stderr)

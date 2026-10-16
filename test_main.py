@@ -1,8 +1,10 @@
+import io
 import os
 import socket
 import string
 import subprocess
 import sys
+import tarfile
 from unittest.mock import MagicMock, patch
 
 import docker
@@ -767,6 +769,128 @@ def test_latest_always_pulls():
     assert should_pull is True
 
 
+# === API token ===
+
+
+def _tar_with(name, content):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        data = content.encode()
+        info = tarfile.TarInfo(name)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _untar(data):
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        return {m.name: (tar.extractfile(m).read().decode(), m.mode) for m in tar.getmembers()}
+
+
+def test_parse_args_api_token():
+    original_argv = sys.argv
+    try:
+        sys.argv = ["main.py", "--api-token", "admin"]
+        assert main.parse_args().api_token == "admin"
+        sys.argv = ["main.py"]
+        assert main.parse_args().api_token is None
+    finally:
+        sys.argv = original_argv
+
+
+def test_enable_workbench_api_appends_config():
+    container = MagicMock()
+    container.get_archive.return_value = (
+        iter([_tar_with("rserver.conf", "www-port=8787\n")]),
+        {},
+    )
+
+    main.enable_workbench_api(container)
+
+    directory, data = container.put_archive.call_args.args
+    assert directory == "/etc/rstudio"
+    files = _untar(data)
+    rserver_conf, _ = files["rserver.conf"]
+    assert rserver_conf.startswith("www-port=8787\n")
+    assert "workbench-api-enabled=1" in rserver_conf
+    assert "workbench-api-admin-enabled=1" in rserver_conf
+    assert "audited-jobs=1" in rserver_conf
+    assert files["audit-database.conf"] == ("provider=sqlite\n", 0o600)
+
+
+def test_create_api_token_admin_passes_token_via_env():
+    container = MagicMock()
+    container.exec_run.side_effect = [(0, b"User added"), (0, b"API Token generated")]
+
+    token = main.create_api_token(container, "testuser", "admin")
+
+    add_user, generate = container.exec_run.call_args_list
+    assert add_user.args[0] == ["rstudio-server", "add-user", "testuser", "1"]
+    assert generate.args[0][:5] == [
+        "rstudio-server", "generate-api-token", "admin", "with-workbench", "testuser",
+    ]
+    assert token not in generate.args[0]
+    assert generate.kwargs["environment"] == {"WITH_WORKBENCH_API_TOKEN": token}
+    assert len(token) == 32
+
+
+def test_create_api_token_user_is_not_admin():
+    container = MagicMock()
+    container.exec_run.side_effect = [(0, b"User added"), (0, b"ok")]
+
+    main.create_api_token(container, "testuser", "user")
+
+    assert container.exec_run.call_args_list[0].args[0][-1] == "0"
+
+
+def test_create_api_token_tolerates_existing_workbench_user():
+    container = MagicMock()
+    container.exec_run.side_effect = [(1, b"User already exists"), (0, b"ok")]
+
+    assert main.create_api_token(container, "testuser", "admin")
+
+
+def test_create_api_token_failure():
+    container = MagicMock()
+    container.exec_run.side_effect = [(0, b"User added"), (1, b"boom")]
+
+    try:
+        main.create_api_token(container, "testuser", "admin")
+        assert False, "Expected RuntimeError"
+    except RuntimeError as e:
+        assert "Failed to generate API token" in str(e)
+
+
+def test_get_workbench_version():
+    response = MagicMock(status_code=200)
+    response.json.return_value = {
+        "version": {"major": "2026", "minor": "10", "patch": "0"},
+        "features": [],
+    }
+    with patch("main.requests.post", return_value=response) as post:
+        assert main.get_workbench_version("http://localhost:8787", "tok") == "2026.10.0"
+    assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer tok"}
+
+
+def test_get_workbench_version_rejected_token():
+    with patch("main.requests.post", return_value=MagicMock(status_code=401)):
+        try:
+            main.get_workbench_version("http://localhost:8787", "tok")
+            assert False, "Expected RuntimeError"
+        except RuntimeError as e:
+            assert "HTTP 401" in str(e)
+
+
+def test_execute_command_passes_api_key():
+    container = MagicMock()
+    container.id = "abc"
+    container.exec_run.return_value = (0, b"")
+
+    main.execute_command(container, ["true"], "testuser", None, api_key="tok")
+
+    assert container.exec_run.call_args.kwargs["environment"]["WORKBENCH_API_KEY"] == "tok"
+
+
 if __name__ == "__main__":
     test_parse_args_with_command()
     print("✓ test_parse_args_with_command passed")
@@ -923,5 +1047,32 @@ if __name__ == "__main__":
 
     test_env_vars_passed_to_container()
     print("✓ test_env_vars_passed_to_container passed")
+
+    test_parse_args_api_token()
+    print("✓ test_parse_args_api_token passed")
+
+    test_enable_workbench_api_appends_config()
+    print("✓ test_enable_workbench_api_appends_config passed")
+
+    test_create_api_token_admin_passes_token_via_env()
+    print("✓ test_create_api_token_admin_passes_token_via_env passed")
+
+    test_create_api_token_user_is_not_admin()
+    print("✓ test_create_api_token_user_is_not_admin passed")
+
+    test_create_api_token_tolerates_existing_workbench_user()
+    print("✓ test_create_api_token_tolerates_existing_workbench_user passed")
+
+    test_create_api_token_failure()
+    print("✓ test_create_api_token_failure passed")
+
+    test_get_workbench_version()
+    print("✓ test_get_workbench_version passed")
+
+    test_get_workbench_version_rejected_token()
+    print("✓ test_get_workbench_version_rejected_token passed")
+
+    test_execute_command_passes_api_key()
+    print("✓ test_execute_command_passes_api_key passed")
 
     print("\nAll tests passed!")

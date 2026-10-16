@@ -52,6 +52,7 @@ This will:
 | `--port`        | `8787`      | Port to expose Workbench on. Automatically finds next available port if in use.                  |
 | `--user`        | `testuser`  | Username to create for testing.                                                                  |
 | `--password`    | (generated) | Password for test user. Auto-generated if not specified.                                         |
+| `--api-token`   |             | Enable the Workbench API and mint an API token (`user`, `admin` or `super-admin`) for `--user`. |
 | `--quiet`       | `false`     | Suppress progress indicators during image pull.                                                  |
 | `-e`, `--env`   |             | Environment variables to pass to the container (KEY=VALUE). Can be repeated.                     |
 | `--stop`        |             | Stop a running container by ID, or use `CONTAINER_ID` env var if not specified.                  |
@@ -109,6 +110,31 @@ The tool creates a PAM user inside the container for authentication:
 - **Default user (`testuser`)**: Created with auto-generated password, output in credentials.
 - **Custom user**: Specify with `--user myuser`. User is created if it doesn't exist.
 - **`rstudio` user**: This user is pre-created in the Workbench image and used by internal services. The tool will use it as-is without modifying the password to avoid service disruption.
+
+### API Tokens
+
+With `--api-token <type>`, the tool also enables the Workbench API and mints an API token for
+`--user`, for testing against the Workbench API (e.g. with
+[posit-sdk](https://github.com/posit-dev/posit-sdk-py)'s `posit.workbench.admin.Client`):
+
+```bash
+eval $(with-workbench --api-token admin)
+curl -f -X POST -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+  -d '{"method":"version","kwparams":{}}' "$WORKBENCH_URL/api/version"
+```
+
+This:
+
+- Sets `workbench-api-enabled`, `workbench-api-admin-enabled` and
+  `workbench-api-super-admin-enabled` in `rserver.conf` (Bearer tokens are rejected otherwise),
+  plus `audited-jobs` so audited jobs can be launched through the API
+- Configures a SQLite audit database, which historical sessions/jobs
+  (`get_historical_session`) require
+- Registers `--user` in Workbench's user database (as an admin for `admin`/`super-admin`
+  tokens) and runs `rstudio-server generate-api-token`
+- Outputs `WORKBENCH_API_KEY` and `WORKBENCH_VERSION` (also set for commands run with `--`)
+
+The configuration is written before the container starts, so no restart is needed.
 
 ### Docker Image Mapping
 
