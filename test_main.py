@@ -14,11 +14,11 @@ import main
 
 
 def test_get_docker_tag_release():
-    assert main.get_docker_tag("release") == (main.IMAGE, "jammy")
+    assert main.get_docker_tag("release") == ("posit/workbench", "latest")
 
 
 def test_get_docker_tag_latest():
-    assert main.get_docker_tag("latest") == (main.IMAGE, "jammy")
+    assert main.get_docker_tag("latest") == ("posit/workbench", "latest")
 
 
 def test_get_docker_tag_preview():
@@ -26,9 +26,18 @@ def test_get_docker_tag_preview():
 
 
 def test_get_docker_tag_specific_version():
-    assert main.get_docker_tag("2026.01.1") == (main.IMAGE, "jammy-2026.01.1")
-    assert main.get_docker_tag("2025.09.0") == (main.IMAGE, "jammy-2025.09.0")
-    assert main.get_docker_tag("2024.01.0") == (main.IMAGE, "jammy-2024.01.0")
+    assert main.get_docker_tag("2026.10.0") == ("posit/workbench", "2026.10.0")
+    assert main.get_docker_tag("2026.01.1") == ("posit/workbench", "2026.01.1")
+    assert main.get_docker_tag("2025.09.0") == ("posit/workbench", "2025.09.0")
+
+
+def test_get_docker_tag_legacy_version():
+    assert main.get_docker_tag("2025.05.1") == ("rstudio/rstudio-workbench", "jammy-2025.05.1")
+    assert main.get_docker_tag("2024.01.0") == ("rstudio/rstudio-workbench", "jammy-2024.01.0")
+
+
+def test_get_docker_tag_unparseable_version():
+    assert main.get_docker_tag("daily") == ("rstudio/rstudio-workbench", "jammy-daily")
 
 
 # === Image Spec Parsing ===
@@ -923,5 +932,11 @@ if __name__ == "__main__":
 
     test_env_vars_passed_to_container()
     print("✓ test_env_vars_passed_to_container passed")
+
+    test_get_docker_tag_legacy_version()
+    print("✓ test_get_docker_tag_legacy_version passed")
+
+    test_get_docker_tag_unparseable_version()
+    print("✓ test_get_docker_tag_unparseable_version passed")
 
     print("\nAll tests passed!")

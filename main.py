@@ -9,8 +9,13 @@ import time
 import docker
 import requests
 
-IMAGE = "rstudio/rstudio-workbench"
+IMAGE = "posit/workbench"
+LEGACY_IMAGE = "rstudio/rstudio-workbench"
 IMAGE_PREVIEW = "rstudio/rstudio-workbench-preview"
+
+# Releases from this version on are published as posit/workbench:<version>; older
+# releases only exist as rstudio/rstudio-workbench:jammy-<version>.
+REGISTRY_CUTOVER = (2025, 9)
 DEFAULT_VERSION = "release"
 DEFAULT_PORT = 8787
 DEFAULT_USER = "testuser"
@@ -94,8 +99,14 @@ def get_docker_tag(version: str) -> tuple[str, str]:
     if version == "preview":
         return (IMAGE_PREVIEW, "jammy-daily")
     if version in ("latest", "release"):
-        return (IMAGE, "jammy")
-    return (IMAGE, f"jammy-{version}")
+        return (IMAGE, "latest")
+    try:
+        year, month = (int(part) for part in version.split(".")[:2])
+    except ValueError:
+        return (LEGACY_IMAGE, f"jammy-{version}")
+    if (year, month) >= REGISTRY_CUTOVER:
+        return (IMAGE, version)
+    return (LEGACY_IMAGE, f"jammy-{version}")
 
 
 def parse_image_spec(image: str) -> tuple[str, str]:
@@ -170,7 +181,7 @@ def ensure_image(
         return (base_image, tag)
     except Exception as e:
         # Try preview registry as fallback for main workbench images
-        if base_image == IMAGE:
+        if base_image in (IMAGE, LEGACY_IMAGE):
             print(
                 f"Image not found in main registry, trying preview...",
                 file=sys.stderr,
